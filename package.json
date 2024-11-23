@@ -1,0 +1,23 @@
+{
+  "name": "cosyworld8",
+  "version": "1.0.0",
+  "main": "src/index.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cloudinary": "^2.5.1",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "mongodb": "^6.10.0",
+    "ollama": "^0.5.9",
+    "openai": "^4.73.0",
+    "replicate": "^1.0.1",
+    "set-interval-async": "^3.0.3",
+    "winston": "^3.15.0"
+  }
+}
