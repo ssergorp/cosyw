@@ -69,6 +69,12 @@ export async function replyToMessage(client, channelId, messageId, replyContent)
  */
 async function getOrCreateWebhook(client, channel) {
   try {
+
+    if (channel.isThread()) {
+      channel = await channel.parent.fetch();
+    }
+
+
     if (webhookCache.has(channel.id)) {
       return webhookCache.get(channel.id);
     }
@@ -101,21 +107,40 @@ async function getOrCreateWebhook(client, channel) {
  * @param {string} avatarUrl - The URL of the avatar to display for the webhook message.
  */
 export async function sendAsWebhook(client, channelId, content, username, avatarUrl) {
+  if (!channelId || typeof channelId !== 'string') {
+    throw new Error(`Invalid channel ID: ${channelId}`);
+  }
+
   try {
     const channel = await client.channels.fetch(channelId);
-    if (!channel) throw new Error(`Channel with ID ${channelId} not found.`);
-    const webhook = await getOrCreateWebhook(client, channel);
-    if (!webhook) throw new Error(`Failed to obtain webhook for channel ${channelId}.`);
+    if (!channel) {
+      throw new Error(`Channel not found: ${channelId}`);
+    }
 
-    await webhook.send({
-      content,
-      username,
-      avatarURL: avatarUrl,
-    });
+    // Get parent channel if this is a thread
+    const targetChannel = channel.isThread() ? channel.parent : channel;
 
-    logger.info(`Sent webhook message to channel ${channelId} as ${username}`);
+    if (!targetChannel) {
+      throw new Error(`Parent channel not found for thread ${channelId}`);
+    }
+
+    let webhook = await getOrCreateWebhook(client, targetChannel);
+
+    const chunks = chunkMessage(content);
+    for (const chunk of chunks) {
+        // Send to thread if needed, otherwise send to channel
+        await webhook.send({
+          content: content,
+          username: username,
+          avatarURL: avatarUrl,
+          threadId: channel.isThread() ? channelId : undefined
+        });
+        logger.info(`Sent message to channel ${channelId} via webhook`);
+     }
+
   } catch (error) {
-    logger.error(`Failed to send webhook message to channel ${channelId}: ${error.message}`);
+    console.error(`Webhook error for channel ${channelId}: ${error.message}`);
+    throw error;
   }
 }
 
@@ -139,19 +164,68 @@ export async function getRecentMessages(client, channelId, limit = 10) {
   }
 }
 
-/**
- * Chunks a long message into smaller parts to comply with Discord's message length limit.
- * @param {string} message - The message content to chunk.
- * @param {number} chunkSize - The maximum size of each chunk.
- * @returns {Array} - An array of message chunks.
- */
 export function chunkMessage(message, chunkSize = 2000) {
+  if (!message) return [];
+  // Split the message into paragraphs based on double line breaks
+  const paragraphs = message.split(/\n\s*\n/);
   const chunks = [];
-  for (let i = 0; i < message.length; i += chunkSize) {
-    chunks.push(message.slice(i, i + chunkSize));
+  let currentChunk = '';
+
+  for (const paragraph of paragraphs) {
+    const trimmedParagraph = paragraph.trim();
+
+    // Check if adding the paragraph exceeds the chunk size
+    if ((currentChunk + '\n\n' + trimmedParagraph).length <= chunkSize) {
+      if (currentChunk) {
+        currentChunk += '\n\n' + trimmedParagraph;
+      } else {
+        currentChunk = trimmedParagraph;
+      }
+    } else {
+      if (currentChunk) {
+        chunks.push(currentChunk);
+      }
+      // If the paragraph itself is larger than chunkSize, split it further
+      if (trimmedParagraph.length <= chunkSize) {
+        currentChunk = trimmedParagraph;
+      } else {
+        // Split the large paragraph into lines
+        const lines = trimmedParagraph.split('\n');
+        currentChunk = '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if ((currentChunk + '\n' + trimmedLine).length <= chunkSize) {
+            if (currentChunk) {
+              currentChunk += '\n' + trimmedLine;
+            } else {
+              currentChunk = trimmedLine;
+            }
+          } else {
+            if (currentChunk) {
+              chunks.push(currentChunk);
+            }
+            // If the line is still too big, split it into smaller chunks
+            if (trimmedLine.length <= chunkSize) {
+              currentChunk = trimmedLine;
+            } else {
+              const splitLine = trimmedLine.match(new RegExp(`.{1,${chunkSize}}`, 'g'));
+              chunks.push(...splitLine.slice(0, -1));
+              currentChunk = splitLine[splitLine.length - 1];
+            }
+          }
+        }
+      }
+    }
   }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
   return chunks;
 }
+
 
 /**
  * Sends a long message by chunking it if necessary.
@@ -202,10 +276,13 @@ export async function sendToThread(client, threadId, content) {
       logger.info(`Created new webhook for parent channel ${channel.id}`);
     }
 
-    await webhook.send({
-      content,
-      threadId: thread.id,
-    });
+    const chunks = chunkMessage(content);
+    for (const chunk of chunks) {
+      await webhook.send({
+        content: chunk,
+        threadId: thread.id,
+      });
+    }
 
     logger.info(`Sent message to thread ${thread.id}`);
   } catch (error) {

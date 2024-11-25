@@ -21,6 +21,18 @@ export function sanitizeInput(input) {
  * @throws Will throw an error if no valid JSON is found.
  */
 export function extractJSON(str) {
+  const startjsonblock = str.indexOf('```json');
+  const endjsonblock = str.indexOf('```', startjsonblock + 1);
+  if (startjsonblock !== -1 && endjsonblock !== -1) {
+    str = str.substring(startjsonblock + 7, endjsonblock);
+  }
+
+  const startCodeBlock = str.indexOf('```');
+  const endCodeBlock = str.indexOf('```', startCodeBlock + 1);
+  if (startCodeBlock !== -1 && endCodeBlock !== -1) {
+    str = str.substring(startCodeBlock + 3, endCodeBlock);
+  }
+
   const start = str.indexOf('{');
   const end = str.lastIndexOf('}');
   

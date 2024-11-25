@@ -4,11 +4,15 @@ import Replicate from 'replicate';
 // import { OllamaService as AIService } from './ollamaService.mjs';
 import { OpenRouterService as AIService } from './openrouterService.mjs';
 import https from 'https';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import process from 'process';
 import winston from 'winston';
 import { v2 as cloudinary } from 'cloudinary';
 import { extractJSON } from './utils.mjs';
+
+import { uploadImage } from './s3imageService.mjs';
+
+import fs from 'fs/promises';
 
 export class AvatarGenerationService {
   constructor() {
@@ -77,11 +81,32 @@ export class AvatarGenerationService {
   async getAllAvatars() {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
-      const avatars = await collection.find({}).toArray();
-      return avatars;
+      const avatars = await collection.find({
+        name: { $exists: true },
+        name: { $ne: null },
+      }).toArray();
+      
+      // Assign 'id' from '_id' if 'id' is missing
+      return avatars.map(avatar => ({
+        ...avatar,
+        id: avatar.id || avatar._id.toString(),
+      }));
     } catch (error) {
       this.logger.error(`Error fetching avatars: ${error.message}`);
       return [];
+    }
+  }
+
+  async retryOperation(operation, maxAttempts = 3) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (attempt === maxAttempts) throw error;
+        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+        this.logger.warn(`Attempt ${attempt} failed, retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
   }
 
@@ -94,48 +119,59 @@ export class AvatarGenerationService {
    */
   async generateAvatarDetails(userPrompt) {
     try {
-      // Define the prompt to request description, emoji, and personality
-      const prompt = `Provide a detailed visual description, an appropriate emoji, and a personality description for a character based on the following prompt
-      
-      "${userPrompt}".
-      
-      Please respond in the following JSON format. ONLY provide valid JSON as a response.
-      Creatively fill in any details without comment, keep all responses to no more than four sentences. 
-  {
-    "name": "<name the character>",
-    "emoji": "<insert an emoji 🤗 that best represents the character>",
-    "description": "<insert a one paragraph detailed description of the characters profile picture>",
-    "personality": "<generate a short unique personality description>'}"
-  }`;
+      const maxRetries = 3;
+      const baseDelay = 1000; // Start with 1 second delay
 
-      // Generate the completion using Ollama service
-      const response = await this.aiService.generateCompletion(prompt, { format: "json" });
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const prompt = `Provide a detailed visual description, an appropriate emoji, and a personality description for a character based on the following prompt
+          
+          "${userPrompt}".
+          
+          Please respond in the following JSON format. ONLY provide valid JSON as a response.
+          Creatively fill in any details without comment, keep all responses to no more than four sentences. 
+          {
+            "name": "<name the character>",
+            "emoji": "<insert an emoji 🤗, (be sure to use proper JSON notation), that best represents the character>",
+            "description": "<insert a one paragraph detailed description of the characters profile picture>",
+            "personality": "<generate a short unique personality description>'}"
+          }`;
 
-      // Check if the response is valid
-      if (!response) {
-        this.logger.error('Failed to generate avatar details.');
-        return null;
+          const response = await this.aiService.chat([
+            { role: 'system', content: 'You are a creative and unsettling character designer.' },
+            { role: 'user', content: prompt },
+          ], { format: "json" });
+
+          // Check if the response is valid
+          if (!response) {
+            throw new Error('Failed to generate avatar details.');
+          }
+          const avatarDetails = JSON.parse(extractJSON(response.trim()));
+
+          // Destructure the necessary fields from the parsed JSON
+          const { name, description, emoji, personality } = avatarDetails;
+
+          // Validate that all required fields are present
+          if (!name || !description || !personality) {
+            throw new Error('Incomplete avatar details received.');
+          }
+
+          // Return the structured avatar details
+          return { name, description, emoji: emoji || "🤗", personality };
+        } catch (error) {
+          this.logger.warn(`Avatar generation attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+
+          if (attempt === maxRetries) {
+            throw new Error(`Failed to generate avatar after ${maxRetries} attempts: ${error.message}`);
+          }
+
+          // Exponential backoff: 1s, 2s, 4s
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
 
-      // Attempt to parse the response as JSON
-      let avatarDetails;
-      try {
-        avatarDetails = JSON.parse(extractJSON(response.trim()));
-      } catch (parseError) {
-        this.logger.error('Failed to parse avatar details response as JSON.');
-        return null;
-      }
-      // Destructure the necessary fields from the parsed JSON
-      const { name, description, emoji, personality } = avatarDetails;
-
-      // Validate that all required fields are present
-      if (!name || !description || !personality) {
-        this.logger.error('Incomplete avatar details received.');
-        return null;
-      }
-
-      // Return the structured avatar details
-      return { name, description, emoji: emoji || "🤗", personality };
+      return
     } catch (error) {
       // Log any unexpected errors
       this.logger.error(`Error while generating avatar details: ${error.message}`);
@@ -161,7 +197,7 @@ export class AvatarGenerationService {
       });
 
       this.logger.info(`Daily request count for channel ${channelId}: ${count}`);
-      return count < 10; // Set your daily limit here
+      return count < 100; // Set your daily limit here
     } catch (error) {
       this.logger.error(`Error checking daily limit: ${error.message}`);
       return false;
@@ -214,64 +250,44 @@ export class AvatarGenerationService {
    * @returns {string|null} - The URL of the generated image or null if failed.
    */
   async generateAvatarImage(prompt) {
-    try {
-      const input = { prompt };
-
-      // Step 1: Initiate the image generation request using Replicate API
-      const prediction = await this.replicate.predictions.create({
-        model: process.env["REPLICATE_MODEL"],
-        input: `MRQ ${input} \n\n cthonic watercolor MRQ`,
-      });
-      this.logger.info(`Prediction started: ${prediction.id}`);
-
-      // Step 2: Poll the prediction status until the image is ready
-      let completed = null;
-      const maxAttempts = 30; // Maximum number of polling attempts (e.g., 30 * 2s = 60s)
-      for (let i = 0; i < maxAttempts; i++) {
-        const latest = await this.replicate.predictions.get(prediction.id);
-        this.logger.info(`Polling attempt ${i + 1}/${maxAttempts}: Status - ${latest.status}`);
-
-        if (latest.status === 'succeeded') {
-          completed = latest;
-          break;
-        } else if (latest.status === 'failed') {
-          throw new Error('Prediction failed');
+    // Step 1: Initiate the image generation request using Replicate API
+    const [output] = await this.replicate.run(
+      "immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f",
+      {
+        input: {
+          prompt: `MRQ ${prompt} neon watercolor MRQ`,
+          model: "dev",
+          lora_scale: 1,
+          num_outputs: 1,
+          aspect_ratio: "1:1",
+          output_format: "png",
+          guidance_scale: 3.5,
+          output_quality: 90,
+          prompt_strength: 0.8,
+          extra_lora_scale: 1,
+          num_inference_steps: 28
         }
-
-        // Wait for 2 seconds before the next poll
-        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
+    );
+    // Get the temporary URL from Replicate
 
-      if (!completed) {
-        throw new Error('Prediction did not complete within the expected time.');
-      }
+    const imageUrl = output.url ? output.url() : [output];
 
-      // Step 3: Extract the image URL
-      const imageUrl = completed.output; // Adjust if the output structure is different
-      if (!imageUrl) {
-        throw new Error('No output URL found in the prediction result.');
-      }
+    console.log('Generated image URL:', imageUrl.toString());
+    const imageBuffer = await this.downloadImage(imageUrl.toString());
 
-      this.logger.info(`Image generated successfully: ${imageUrl}`);
-      return imageUrl;
-    } catch (error) {
-      this.logger.error(`Error during avatar image generation: ${error.message}`);
-      return null;
-    }
+    const uuid = `avatar_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const filename = `./images/${uuid}.png`;
+    await fs.mkdir('./images', { recursive: true });
+    await fs.writeFile(filename, imageBuffer);
+    return filename;
   }
 
   /**
  * Updates an avatar's details.
- * @param {string} avatarId - The ID of the avatar to update.
- * @param {Object} updates - The fields to update.
- * @param {string} [updates.name] - The new name of the avatar.
- * @param {string} [updates.emoji] - The new emoji representing the avatar.
- * @param {string} [updates.personality] - The new personality traits.
- * @param {string} [updates.description] - The new description of the avatar.
- * @param {string} [updates.channelId] - The updated Discord channel ID associated with the avatar.
- * @returns {Object|null} - The updated avatar document or null if the update failed.
- */
-  async updateAvatar(avatarId, updates) {
+ * @param {object} avatar - The avatar object to update.
+ **/
+  async updateAvatar(avatar) {
     if (!this.db) {
       this.logger.error('Database is not connected. Cannot update avatar.');
       return null;
@@ -281,61 +297,33 @@ export class AvatarGenerationService {
       // Prepare the update document
       const updateDoc = {
         $set: {
-          ...updates,
+          ...avatar,
           updatedAt: new Date(),
         },
       };
 
       // Update the avatar in the 'avatars' collection
       const updateResult = await this.db.collection(this.AVATARS_COLLECTION).updateOne(
-        { _id: new MongoClient.ObjectId(avatarId) },
+        { _id: avatar._id },
         updateDoc
       );
 
       if (updateResult.matchedCount === 0) {
-        this.logger.error(`Avatar with ID ${avatarId} not found.`);
+        this.logger.error(`Avatar with ID ${avatar._id} not found.`);
         return null;
       }
 
       if (updateResult.modifiedCount === 1) {
-        this.logger.info(`Avatar ID ${avatarId} updated successfully.`);
-        // Fetch the updated document
-        const updatedAvatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: new MongoClient.ObjectId(avatarId) });
+        this.logger.info(`Avatar ID ${avatar._id} updated successfully.`);
+        // Fetch the updated document correctly using ObjectId
+        const updatedAvatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: avatar._id });
         return updatedAvatar;
       } else {
-        this.logger.error(`Failed to update avatar with ID ${avatarId}.`);
+        this.logger.error(`Failed to update avatar with ID ${avatar._id}.`);
         return null;
       }
     } catch (error) {
       this.logger.error(`Error during avatar update: ${error.message}`);
-      return null;
-    }
-  }
-
-
-  /**
-   * Uploads an image buffer to Cloudinary.
-   * @param {Buffer} imageBuffer - The image data as a buffer.
-   * @param {string} publicId - The desired public ID for the image.
-   * @returns {string|null} - The Cloudinary URL of the uploaded image or null if failed.
-   */
-  async uploadImageToCloudinary(imageBuffer, publicId) {
-    try {
-      // Convert buffer to base64 string
-      const base64Image = imageBuffer.toString('base64');
-      const dataUri = `data:image/png;base64,${base64Image}`; // Adjust MIME type if necessary
-
-      const result = await cloudinary.uploader.upload(dataUri, {
-        public_id: publicId,
-        folder: 'avatars', // Optional: Organize images into folders
-        overwrite: true, // Overwrite if public_id already exists
-        resource_type: 'image',
-      });
-
-      this.logger.info(`Image uploaded to Cloudinary: ${result.secure_url}`);
-      return result.secure_url;
-    } catch (error) {
-      this.logger.error(`Cloudinary upload failed: ${error.message}`);
       return null;
     }
   }
@@ -346,30 +334,18 @@ export class AvatarGenerationService {
    * @returns {Buffer|null} - The image buffer or null if failed.
    */
   // Function to download image
-  async downloadImage(imageUrl) {
-    return new Promise((resolve, reject) => {
-      const options = {
-        rejectUnauthorized: false // Allow self-signed certificates
-      };
-
-      https.get(imageUrl, options, (response) => {
-        if (response.statusCode !== 200) {
-          reject(new Error(`Failed to get image. Status code: ${response.statusCode}`));
-          return;
-        }
-
-        let data = '';
-        response.on('data', (chunk) => {
-          data += chunk;
-        });
-
-        response.on('end', () => {
-          resolve(data);
-        });
-      }).on('error', (error) => {
-        reject(new Error(`Error downloading the image: ${error.message}`));
-      });
-    });
+  async downloadImage(url) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to get '${url}' (${response.status})`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return buffer;
+    } catch (error) {
+      throw new Error('Error downloading the image: ' + error.message);
+    }
   }
   /**
    * Creates a new avatar by generating its description and image, then saving it to the database.
@@ -401,64 +377,25 @@ export class AvatarGenerationService {
         return null;
       }
 
-      // Step 3: Generate Avatar Image with Polling
-      // Step 3: Generate Avatar Image with Retry Logic
-      const MAX_RETRIES = 3; // Maximum number of retry attempts
-      const RETRY_DELAY_MS = 1000; // Delay between retries in milliseconds (optional)
-
-      let replicateImageUrl = null;
-      let attempt = 0;
-
-      while (attempt < MAX_RETRIES && !replicateImageUrl) {
-        try {
-          attempt += 1;
-          this.logger.info(`Attempt ${attempt} to generate avatar image.`);
-
-          replicateImageUrl = await this.generateAvatarImage(avatar.description);
-
-          if (!replicateImageUrl) {
-            this.logger.warn(`Attempt ${attempt} failed: No image URL returned.`);
-
-            if (attempt < MAX_RETRIES) {
-              this.logger.info(`Retrying in ${RETRY_DELAY_MS}ms...`);
-              await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
-            }
-          }
-        } catch (error) {
-          this.logger.error(`Attempt ${attempt} encountered an error: ${error.message}`);
-
-          if (attempt < MAX_RETRIES) {
-            this.logger.info(`Retrying in ${RETRY_DELAY_MS}ms...`);
-            await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
-          } else {
-            this.logger.error('Maximum retry attempts reached. Avatar creation aborted.');
-            return null;
-          }
-        }
+      // Assign a unique ID if not already present
+      if (!avatar.id) {
+        avatar.id = this.generateUniqueId();
       }
 
-      if (!replicateImageUrl) {
-        this.logger.error('Avatar creation aborted: Image generation failed after multiple attempts.');
-        return null;
+      // Ensure the name is set; default if not provided
+      if (!avatar.name) {
+        avatar.name = `Avatar_${avatar.id}`;
       }
 
       // Step 4: Download the Image as Buffer
-      const imageBuffer = await this.downloadImage(replicateImageUrl);
-      if (!imageBuffer) {
-        this.logger.error('Avatar creation aborted: Image download failed.');
-        return null;
-      }
+      const imageFile = await this.generateAvatarImage(avatar.description);
 
-      // Step 5: Upload Image to Cloudinary
-      const publicId = `avatar_${Date.now()}_${Math.floor(Math.random() * 1000)}`; // Unique public ID
-      const cloudinaryUrl = await this.uploadImageToCloudinary(imageBuffer, publicId);
-      if (!cloudinaryUrl) {
-        this.logger.error('Avatar creation aborted: Cloudinary upload failed.');
-        return null;
-      }
+      // Step 5: Upload the Image to S3
+      const s3url = await uploadImage(imageFile);
+      console.log('S3 URL:', s3url);
 
       // Step 6: Insert the Prompt and Result into MongoDB
-      await this.insertRequestIntoMongo(avatar.description, cloudinaryUrl, channelId);
+      await this.insertRequestIntoMongo(avatar.description, s3url, channelId);
 
       // Step 7: Create Avatar Document
       const avatarDocument = {
@@ -466,7 +403,7 @@ export class AvatarGenerationService {
         emoji: avatar.emoji,
         personality: avatar.personality,
         description: avatar.description,
-        imageUrl: cloudinaryUrl,
+        imageUrl: s3url,
         channelId,
         createdAt: new Date(),
       };
@@ -474,7 +411,7 @@ export class AvatarGenerationService {
       // Step 8: Insert Avatar into the 'avatars' Collection
       const result = await this.db.collection(this.AVATARS_COLLECTION).insertOne(avatarDocument);
       if (result.acknowledged === true) {
-        this.logger.info(`Avatar "${name}" created successfully with ID: ${result.insertedId}`);
+        this.logger.info(`Avatar "${avatar.name} ${avatar.emoji}" created successfully with ID: ${result.insertedId}`);
         return { _id: result.insertedId, ...avatarDocument };
       } else {
         this.logger.error('Failed to insert avatar into the database.');
@@ -498,7 +435,7 @@ export class AvatarGenerationService {
     }
 
     try {
-      const avatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: new MongoClient.ObjectId(avatarId) });
+      const avatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: ObjectId.createFromTime(avatarId) });
       if (!avatar) {
         this.logger.error(`Avatar with ID ${avatarId} not found.`);
         return false;
@@ -513,32 +450,19 @@ export class AvatarGenerationService {
 
       this.logger.warn(`Avatar image for ID ${avatarId} is defunct. Regenerating...`);
 
-      // Step 2: Generate a new avatar image
-      const newImageUrl = await this.generateAvatarImage(avatar.description);
-      if (!newImageUrl) {
-        this.logger.error('Regeneration aborted: Image generation failed.');
-        return false;
-      }
-
       // Step 3: Download the new image
-      const imageBuffer = await this.downloadImage(newImageUrl);
-      if (!imageBuffer) {
+      const imageFile = await this.generateAvatarImage(avatar.description)
+      if (!imageFile) {
         this.logger.error('Regeneration aborted: Image download failed.');
         return false;
       }
 
-      // Step 4: Upload the new image to Cloudinary
-      const publicId = `avatar_${Date.now()}_${Math.floor(Math.random() * 1000)}`; // Unique public ID
-      const cloudinaryUrl = await this.uploadImageToCloudinary(imageBuffer, publicId);
-      if (!cloudinaryUrl) {
-        this.logger.error('Regeneration aborted: Cloudinary upload failed.');
-        return false;
-      }
+      const s3Url = await uploadImage(imageFile);
 
       // Step 5: Update the avatar document with the new image URL
       const updateResult = await this.db.collection(this.AVATARS_COLLECTION).updateOne(
-        { _id: new MongoClient.ObjectId(avatarId) },
-        { $set: { imageUrl: cloudinaryUrl, updatedAt: new Date() } }
+        { _id: ObjectId.createFromTime(avatarId) },
+        { $set: { imageUrl: s3Url, updatedAt: new Date() } }
       );
 
       if (updateResult.modifiedCount === 1) {
@@ -552,5 +476,10 @@ export class AvatarGenerationService {
       this.logger.error(`Error during avatar image regeneration: ${error.message}`);
       return false;
     }
+  }
+
+  // Add a method to generate unique IDs
+  generateUniqueId() {
+    return new ObjectId().toString();
   }
 }

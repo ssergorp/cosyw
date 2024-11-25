@@ -44,7 +44,7 @@ export class OpenRouterService {
         console.error('Invalid response from OpenRouter during chat.');
         return null;
       }
-      return response.choices[0].message.content.trim();
+      return response.choices[0].message.content.trim() || '...';
     } catch (error) {
       console.error('Error while chatting with OpenRouter:', error);
       return null;
