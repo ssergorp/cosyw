@@ -6,6 +6,9 @@ export class AttentionManager {
     this.ATTENTION_CHECK_INTERVAL = 60000; // 1 minute
     this.POST_MENTION_MESSAGES = 3; // Number of messages to track after mention
     this.messageCounter = new Map(); // key: `${channelId}-${avatarId}`, value: messages since mention
+    this.attentionThreshold = 0.4; // Threshold for deciding to respond
+    this.decayRate = 0.1; // Rate at which attention decays
+    this.channelAttention = new Map();
     
     // Start decay interval
     setInterval(() => this.decayAttention(), this.ATTENTION_CHECK_INTERVAL);
@@ -22,8 +25,16 @@ export class AttentionManager {
   }
 
   increaseAttention(channelId, avatarId, amount = 0.2) {
-    const currentLevel = this.getAttention(channelId, avatarId);
-    this.setAttention(channelId, avatarId, currentLevel + amount);
+    if (!this.attentionLevels.has(channelId)) {
+      this.attentionLevels.set(channelId, new Map());
+    }
+    const channelAttention = this.attentionLevels.get(channelId);
+    if (!channelAttention) {
+      this.logger.error('Channel attention map not found:', channelId);
+      return;
+    }
+    const currentAttention = channelAttention.get(avatarId) || 0;
+    channelAttention.set(avatarId, Math.min(1, currentAttention + amount));
   }
 
   handleMention(channelId, avatarId) {
@@ -77,14 +88,8 @@ export class AttentionManager {
   }
 
   shouldRespond(channelId, avatarId) {
-    // Recently mentioned avatars have higher chance to respond
-    if (this.isRecentlyMentioned(channelId, avatarId)) {
-      return Math.random() < 0.8; // 80% chance to respond after mention
-    }
-
-    // Normal attention-based logic
-    return this.shouldForceRespond(channelId, avatarId) ||
-           this.shouldRandomlyRespond(channelId, avatarId) ||
-           this.shouldConsiderResponse(channelId, avatarId);
+    const attention = this.attentionLevels.get(channelId)?.get(avatarId) || 0;
+    const random = Math.random();
+    return random < (attention + 0.1); // Small chance to respond even with low attention
   }
 }

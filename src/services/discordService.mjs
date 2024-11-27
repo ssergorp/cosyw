@@ -130,7 +130,7 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
     for (const chunk of chunks) {
         // Send to thread if needed, otherwise send to channel
         await webhook.send({
-          content: content,
+          content: chunk,
           username: username,
           avatarURL: avatarUrl,
           threadId: channel.isThread() ? channelId : undefined

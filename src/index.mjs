@@ -16,7 +16,6 @@ import {
   sendToThread,
 } from './services/discordService.mjs';
 import { ChatService } from './services/chat/ChatService.mjs'; // Updated import path
-import { BackgroundConversationManager } from './services/chat/BackgroundConversationManager.mjs'; // Added import
 
 // Load environment variables from .env file
 dotenv.config();
@@ -129,6 +128,7 @@ async function saveMessageToDatabase(message) {
  */
 async function handleCreateCommand(message, args) {
 
+  await reactToMessage(client, message.channel.id, message.id, '👍');
   const prompt = args.join(' ') || 'create a new avatar, use your imagination!';
 
   try {
@@ -154,7 +154,7 @@ async function handleCreateCommand(message, args) {
           ${createdAvatar.description}
           ${createdAvatar.personality}
         ` },
-        { role: 'user', content: `What's your avatar name? And what special power would you like to posess?` }
+        { role: 'user', content: `What's your avatar name? And what makes you unique in the digital realm?` }
       ]);
 
       createdAvatar.dynamicPersonality = intro;
@@ -169,22 +169,11 @@ async function handleCreateCommand(message, args) {
       );
 
     } else {
-      await replyToMessage(
-        client,
-        message.channel.id,
-        message.id,
-        '❌ *fizzle and pop* The summoning ritual failed randomly. 🎲'
-      );
-      logger.error('Avatar missing required fields after creation:', JSON.stringify(createdAvatar, null, 2));
+      throw new Error('Avatar missing required fields after creation:', JSON.stringify(createdAvatar, null, 2));
     }
   } catch (error) {
     logger.error(`Error creating avatar: ${error.message}`);
-    await replyToMessage(
-      client,
-      message.channel.id,
-      message.id,
-      '❌ An error occurred while creating the avatar. Please try again later.'
-    );
+    await reactToMessage(client, message.channel.id, message.id, '❌');
   }
 }
 
@@ -253,7 +242,8 @@ function extractMentionedAvatars(content, avatars) {
  * Handles other commands based on the message content.
  * @param {Message} message - The Discord message object.
  */
-async function handleOtherCommands(message) {
+async function handleCommands(message, args) {
+
   if (message.content === '!react') {
     await reactToMessage(client, message.channel.id, message.id, '👍');
   }
@@ -302,13 +292,22 @@ async function handleOtherCommands(message) {
 
   if (message.content.startsWith('!summon ')) {
     const args = message.content.slice(8).split(' ');
-    reactToMessage(client, message.channel.id, message.id, '🔮');
+    await reactToMessage(client, message.channel.id, message.id, '🔮');
     await handleCreateCommand(message, args);
+    await reactToMessage(client, message.channel.id, message.id, '✅');
   }
 } // Added closing brace for handleOtherCommands
 
 client.on('messageCreate', async (message) => {
   try {
+
+    
+    // Only process commands for non-bot messages
+    if (message.content.startsWith('!')) {
+      const [command, ...args] = message.content.slice(1).split(' ');
+      await handleCommands(message, args);
+    }
+
     // Ensure chatService exists before calling methods
     if (chatService && typeof chatService.updateLastMessageTime === 'function') {
       chatService.updateLastMessageTime();
@@ -351,7 +350,7 @@ client.on('messageCreate', async (message) => {
         }
         logger.info(`Processing mention for avatar: ${avatar.name} (ID: ${avatarId})`);
         chatService.handleMention(message.channel.id, avatarId);
-        await chatService.respondAsAvatar(client, message.channel, avatar, true);
+        await chatService.respondAsAvatar(client, message.channel, avatar, !message.author.bot);
       }
     } else {
       // Check for recently mentioned avatars that might want to respond
@@ -364,15 +363,6 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // Only process commands for non-bot messages
-    if (!message.author.bot && message.content.startsWith('!')) {
-      const [command, ...args] = message.content.slice(1).split(' ');
-      if (command === 'summon') {
-        await handleCreateCommand(message, args);
-      } else {
-        await handleOtherCommands(message);
-      }
-    }
   } catch (error) {
     logger.error(`Error processing message: ${error.stack}`);
   }

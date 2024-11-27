@@ -1,4 +1,4 @@
-[
+const models = [
     {
       "model": "meta-llama/llama-3.2-1b-instruct",
       "rarity": "common"
@@ -20,6 +20,14 @@
       "rarity": "legendary"
     },
     {
+      "model": "anthropic/claude-3-opus:beta",
+      "rarity": "legendary"
+    },
+    {
+      "model": "anthropic/claude-3.5-sonnet:beta",
+      "rarity": "legendary"
+    },
+    {
       "model": "anthropic/claude-3.5-haiku:beta",
       "rarity": "rare"
     },
@@ -34,6 +42,11 @@
     {
       "model": "meta-llama/llama-3.1-70b-instruct",
       "rarity": "uncommon"
+    },
+    {
+      "model": "pygmalionai/mythalion-13b",
+      "rarity": "uncommon"
     }
-  ]
-  
+  ];
+
+export default models;

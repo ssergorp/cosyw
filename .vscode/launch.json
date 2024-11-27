@@ -7,11 +7,22 @@
         {
             "type": "node",
             "request": "launch",
+            "name": "Launch Server",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "program": "${workspaceFolder}/server/app.mjs",
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "type": "node",
+            "request": "launch",
             "name": "Launch Program",
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}/src/index.mjs"
+            "program": "${workspaceFolder}/src/index.mjs",
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }

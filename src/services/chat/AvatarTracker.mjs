@@ -1,9 +1,11 @@
 export class AvatarTracker {
-  constructor() {
+  constructor(client, logger) {
+    this.client = client;
+    this.logger = logger;
+    this.avatarThreadMap = new Map(); // Maps avatarId to threadId
     this.channelAvatars = new Map();
     this.avatarChannels = new Map(); // Track channels per avatar
     this.guildActivity = new Map(); // avatarId -> Map<guildId, timestamp>
-    this.logger = console;
   }
 
   MAX_CHANNELS_PER_AVATAR = 3;
@@ -41,6 +43,7 @@ export class AvatarTracker {
     }
     this.channelAvatars.get(channelId).add(avatarId);
     this.logger.info(`Avatar ${avatarId} added to channel ${channelId} in guild ${guildId}`);
+    
     return true;
   }
 
@@ -91,5 +94,48 @@ export class AvatarTracker {
     }
 
     return mostRecentGuildId;
+  }
+
+  // Find or create a thread for the given avatar
+  async getOrCreateAvatarThread(avatar) {
+    const avatarId = avatar.id || avatar._id?.toString();
+    if (this.avatarThreadMap.has(avatarId)) {
+      return this.client.channels.cache.get(this.avatarThreadMap.get(avatarId));
+    }
+
+    // Search for the thread in the 'avatars' channel
+    const guild = this.client.guilds.cache.first();
+    if (!guild) {
+      this.logger.error('Guild not found in AvatarTracker');
+      return null;
+    }
+
+    const avatarsChannel = guild.channels.cache.find(c => c.name === 'avatars' && c.isTextBased());
+    if (!avatarsChannel) {
+      this.logger.error('Avatars channel not found');
+      return null;
+    }
+
+    // Search for existing thread
+    const existingThread = avatarsChannel.threads.cache.find(t => t.name === `${avatar.name} ${avatar.emoji}`);
+    if (existingThread) {
+      this.avatarThreadMap.set(avatarId, existingThread.id);
+      return existingThread;
+    }
+
+    // Create a new thread if it doesn't exist
+    try {
+      const thread = await avatarsChannel.threads.create({
+        name: `${avatar.name} ${avatar.emoji}`,
+        autoArchiveDuration: 1440, // 24 hours
+        reason: `Thread for avatar ${avatar.name}`
+      });
+      this.avatarThreadMap.set(avatarId, thread.id);
+      this.logger.info(`Created new thread for avatar ${avatar.name}`);
+      return thread;
+    } catch (error) {
+      this.logger.error(`Error creating thread for avatar ${avatar.name}: ${error.message}`);
+      return null;
+    }
   }
 }

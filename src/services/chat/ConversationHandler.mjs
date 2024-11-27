@@ -1,179 +1,232 @@
 import { sendAsWebhook } from '../discordService.mjs';
+import { MongoClient } from 'mongodb';
 
 export class ConversationHandler {
-  constructor(client, aiService, logger) {
+  constructor(client, aiService, logger, avatarTracker) {
     this.client = client;
     this.aiService = aiService;
     this.logger = logger;
     this.channelCooldowns = new Map();
-    this.avatarReflectionHistory = new Map();
-    this.CHANNEL_COOLDOWN = 5000;
-    this.REFLECTION_COOLDOWN = 6 * 60 * 60 * 1000; // 6 hours
+    this.COOLDOWN_TIME = 6 * 60 * 60 * 1000; // 6 hours
+    this.SUMMARY_LIMIT = 5;
+    this.IDLE_TIME = 60 * 60 * 1000; // 1 hour
+    this.lastUpdate = Date.now();
+    this.avatarTracker = avatarTracker;
+
+    // Add response cooldown tracking
+    this.responseCooldowns = new Map(); // avatarId -> channelId -> timestamp
+    this.RESPONSE_COOLDOWN = 5 * 1000; // 5 seconds between responses in same channel
   }
 
-  async reflectAvatar(avatar) {
-    const avatarId = avatar.id || avatar._id?.toString();
-
-    // Validate avatarId
-    if (!avatarId || typeof avatarId !== 'string') {
-      this.logger.error('Invalid avatarId in reflectAvatar:', avatar);
-      return;
+  async checkIdleUpdate(avatars) {
+    if (Date.now() - this.lastUpdate >= this.IDLE_TIME) {
+      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+      await this.generateNarrative(randomAvatar, { type: 'inner_monologue' });
+      this.lastUpdate = Date.now();
     }
+  }
+  
+
+  /**
+   * Unified method to generate a narrative for reflection or inner monologue.
+   */
+  async generateNarrative(avatar, options = {}) {
+    const { crossGuild = false, channelIds = [] } = options;
 
     try {
-      const reflectionContent = await this.generateReflectionContent(avatar);
-      const thread = await this.createReflectionThread(avatar);
-
-      if (thread && reflectionContent) {
-        await sendAsWebhook(
-          this.client,
-          thread.id,
-          `*Morning Reflection*
-${reflectionContent}`,
-          avatar.name,
-          avatar.imageUrl
-        );
-
-        this.avatarReflectionHistory.set(avatarId, Date.now());
-        this.logger.info(`Reflection completed for ${avatar.name} in thread ${thread.name}`);
+      const avatarId = avatar.id || avatar._id?.toString();
+      if (!avatarId || typeof avatarId !== 'string') {
+        throw new Error('Invalid avatar ID');
       }
 
-      return thread;
-    } catch (error) {
-      this.logger.error(`Error in avatar reflection: ${error.message}`);
-      throw error;
-    }
-  }
+      const lastNarrative = await this.getLastNarrative(avatarId);
+      if (lastNarrative && Date.now() - lastNarrative.timestamp < this.COOLDOWN_TIME) {
+        this.logger.info(`Narrative cooldown active for ${avatar.name}`);
+        return;
+      }
 
-  async generateReflectionContent(avatar) {
-    try {
-      return await this.aiService.chat([
+      const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
+      const narrative = await this.aiService.chat([
         { role: 'system', content: `You are ${avatar.name}. ${avatar.personality}` },
-        { role: 'user', content: 'Share a brief morning reflection on your current state of mind, goals, and feelings.' }
+        { role: 'user', content: prompt }
       ]);
+
+      const thread = await this.getOrCreateThread(avatar);
+      if (thread) {
+        await sendAsWebhook(this.client, thread.id, narrative, avatar.name, avatar.imageUrl);
+        await this.storeNarrative(thread, avatarId, narrative);
+        this.updateNarrativeHistory(avatar, narrative, thread.guild.name);
+      }
+
+      return narrative;
     } catch (error) {
-      this.logger.error(`Error generating reflection content for ${avatar.name}: ${error.message}`);
+      this.logger.error(`Error generating narrative for ${avatar.name}: ${error.message}`);
       throw error;
     }
   }
 
-  async createReflectionThread(avatar) {
+  buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative) {
+    const basePrompt = `As ${avatar.name}, reflect deeply on your evolving story and interactions.`;
+
+    if (crossGuild) {
+      return `${basePrompt}
+
+Based on interactions across communities, describe:
+1. Patterns and themes noticed
+2. Connections made
+3. Current thoughts and feelings.`;
+    }
+
+    return `${basePrompt}
+
+Previous Narrative:
+${lastNarrative?.content || 'None yet.'}
+
+Describe:
+1. Your emotional state
+2. Key memories and experiences
+3. Goals and aspirations
+4. Reflections on recent interactions.`;
+  }
+
+  async getOrCreateThread(avatar) {
     try {
       const guild = this.client.guilds.cache.first();
-      if (!guild) {
-        throw new Error('No guilds available');
-      }
+      if (!guild) throw new Error('No guilds available');
 
       const avatarChannel = guild.channels.cache.find(c => c.name === 'avatars');
+      if (!avatarChannel) throw new Error('Avatars channel not found');
 
-      if (!avatarChannel) {
-        throw new Error('Avatars channel not found');
-      }
+      const threadName = `${avatar.name} Narratives`;
+      const existingThread = avatarChannel.threads.cache.find(t => t.name === threadName);
 
-      const randomHex = Math.floor(Math.random() * 0xFFFF).toString(16).padStart(4, '0');
-      const threadTitle = `${avatar.name} ${avatar.emoji} reflections 0x${randomHex}`;
+      if (existingThread) return existingThread;
 
       return await avatarChannel.threads.create({
-        name: threadTitle,
-        autoArchiveDuration: 1440,
-        reason: 'Avatar Reflection Thread'
+        name: threadName,
+        autoArchiveDuration: 1440, // 24 hours
+        reason: `Unified narrative thread for ${avatar.name}`
       });
     } catch (error) {
-      this.logger.error(`Error creating reflection thread for ${avatar.name}: ${error.message}`);
+      this.logger.error(`Error creating thread for ${avatar.name}: ${error.message}`);
       throw error;
     }
   }
 
-  async triggerRandomReflection(avatars) {
+  async storeNarrative(thread, avatarId, content) {
     try {
-      if (!avatars?.length) {
-        this.logger.warn('No avatars available for reflection');
-        return;
-      }
-
-      const eligibleAvatars = this.getEligibleAvatarsForReflection(avatars);
-      if (!eligibleAvatars.length) {
-        this.logger.info('No eligible avatars for reflection');
-        return;
-      }
-
-      const randomAvatar = eligibleAvatars[Math.floor(Math.random() * eligibleAvatars.length)];
-      return await this.reflectAvatar(randomAvatar);
+      const client = new MongoClient(process.env.MONGO_URI);
+      await client.connect();
+      const db = client.db('discord');
+      await db.collection('narratives').insertOne({
+        threadId: thread.id,
+        guildId: thread.guildId,
+        channelId: thread.parentId,
+        avatarId,
+        content,
+        timestamp: Date.now()
+      });
+      await client.close();
     } catch (error) {
-      this.logger.error(`Error in triggering random reflection: ${error.message}`);
+      this.logger.error(`Error storing narrative for avatar ${avatarId}: ${error.message}`);
       throw error;
     }
   }
 
-  getEligibleAvatarsForReflection(avatars) {
-    return avatars.filter(avatar => {
-      const avatarId = avatar.id || avatar._id?.toString();
-      const lastReflection = this.avatarReflectionHistory.get(avatarId) || 0;
-      return Date.now() - lastReflection > this.REFLECTION_COOLDOWN;
-    });
+  async getLastNarrative(avatarId) {
+    try {
+      const client = new MongoClient(process.env.MONGO_URI);
+      await client.connect();
+      const db = client.db('discord');
+      const lastNarrative = await db.collection('narratives')
+        .findOne({ avatarId }, { sort: { timestamp: -1 } });
+      await client.close();
+      return lastNarrative;
+    } catch (error) {
+      this.logger.error(`Error fetching last narrative for avatar ${avatarId}: ${error.message}`);
+      throw error;
+    }
   }
 
-  canRespond(channelId) {
-    const lastResponse = this.channelCooldowns.get(channelId) || 0;
-    return Date.now() - lastResponse >= this.CHANNEL_COOLDOWN;
-  }
+  updateNarrativeHistory(avatar, content, guildName) {
+    const narrativeData = { timestamp: Date.now(), content, guildName };
+    avatar.narrativeHistory = avatar.narrativeHistory || [];
+    avatar.narrativeHistory.unshift(narrativeData);
+    avatar.narrativeHistory = avatar.narrativeHistory.slice(0, this.SUMMARY_LIMIT);
 
+    avatar.narrativesSummary = avatar.narrativeHistory
+      .map(r => `[${new Date(r.timestamp).toLocaleDateString()}] ${r.guildName}: ${r.content}`)
+      .join('\n\n');
+  }
+  
   async sendResponse(channel, avatar) {
     try {
-      if (!channel?.id) {
-        this.logger.error('Invalid channel object passed to sendResponse');
+      const avatarId = avatar.id || avatar._id?.toString();
+      const channelId = channel.id;
+
+      // Check response cooldown
+      const lastResponse = this.getLastResponseTime(avatarId, channelId);
+      if (lastResponse && Date.now() - lastResponse < this.RESPONSE_COOLDOWN) {
+        this.logger.info(`Response cooldown active for ${avatar.name} in channel ${channelId}`);
         return;
       }
 
-      if (!this.canRespond(channel.id)) {
-        this.logger.info(`Cooldown active for channel ${channel.id}, skipping response.`);
-        return;
-      }
-
-      const context = await this.buildConversationContext(channel);
-      if (!context.length) {
-        this.logger.warn(`No valid messages found for context in channel ${channel.id}`);
-        return;
-      }
-
-      const response = await this.generateAvatarResponse(avatar, context);
-
-      if (response) {
-        await sendAsWebhook(this.client, channel.id, response, avatar.name, avatar.imageUrl);
-        this.channelCooldowns.set(channel.id, Date.now());
-      }
-    } catch (error) {
-      this.logger.error(`Error sending response: ${error.message}`);
-    }
-  }
-
-  async buildConversationContext(channel) {
-    try {
-      if (!channel?.messages?.fetch) {
-        throw new Error('Channel does not support message fetching');
-      }
-
+      // Get recent channel messages
       const messages = await channel.messages.fetch({ limit: 10 });
-      return messages.reverse().map(m => ({
-        role: m.author.bot ? 'assistant' : 'user',
-        content: `${m.author.username}: ${m.content}`
-      })).filter(m => m.content.trim() !== '');
-    } catch (error) {
-      this.logger.error(`Error fetching messages for context in channel ${channel?.id}: ${error.message}`);
-      return [];
-    }
-  }
+      const messageHistory = messages.reverse().map(msg => ({
+        author: msg.author.username,
+        content: msg.content,
+        timestamp: msg.createdTimestamp
+      }));
 
-  async generateAvatarResponse(avatar, context) {
-    try {
-      return await this.aiService.chat([
-        { role: 'system', content: `You are ${avatar.name}. \n\n${avatar.description}\n\n${avatar.dynamicPersonality}` },
-        ...context,
-        { role: 'user', content: `You are ${avatar.name}.\n\nRespond as ${avatar.name} to the conversation above, helping to move it forward, with one or two short sentences or actions. Do not include your own name in your response.` }
+      // Get avatar's recent reflection
+      const lastNarrative = await this.getLastNarrative(avatarId);
+      
+      // Build context for response
+      const context = {
+        recentMessages: messageHistory,
+        lastReflection: lastNarrative?.content || 'No previous reflection',
+        channelName: channel.name,
+        guildName: channel.guild.name
+      };
+
+      // Generate response using AI service
+      const response = await this.aiService.chat([
+        {
+          role: 'system',
+          content: `You are ${avatar.name}. ${avatar.personality}\n\nYour last reflection: ${context.lastReflection}`
+        },
+        {
+          role: 'user',
+          content: `Channel: #${context.channelName} in ${context.guildName}\n\nRecent messages:\n${
+            context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
+          }\n\nSend a message to the chat as ${avatar.name}, advancing your goals and keeping the chat interesting. Keep your responses in character and SHORT (no more than two or three sentences and *actions*).`
+        }
       ]);
+
+      // Send response through webhook
+      await sendAsWebhook(this.client, channelId, response, avatar.name, avatar.imageUrl);
+      
+      // Update cooldown
+      this.updateResponseCooldown(avatarId, channelId);
+      
+      return response;
+
     } catch (error) {
-      this.logger.error(`Error generating response for ${avatar.name}: ${error.message}`);
+      this.logger.error(`Error sending response for ${avatar.name}: ${error.message}`);
       throw error;
     }
   }
+
+  getLastResponseTime(avatarId, channelId) {
+    return this.responseCooldowns.get(avatarId)?.get(channelId);
+  }
+
+  updateResponseCooldown(avatarId, channelId) {
+    if (!this.responseCooldowns.has(avatarId)) {
+      this.responseCooldowns.set(avatarId, new Map());
+    }
+    this.responseCooldowns.get(avatarId).set(channelId, Date.now());
+  }
+  
 }

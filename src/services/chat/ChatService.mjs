@@ -11,11 +11,11 @@ export class ChatService {
     this.client = client;
     this.logger = logger;
 
+    this.avatarTracker = new AvatarTracker(this.client, this.logger);
     this.attentionManager = new AttentionManager(logger);
-    this.conversationHandler = new ConversationHandler(client, aiService, logger);
+    this.conversationHandler = new ConversationHandler(client, aiService, logger, this.avatarTracker);
     this.decisionMaker = new DecisionMaker(aiService, logger, this.attentionManager);
     this.messageProcessor = new MessageProcessor(avatarService);
-    this.avatarTracker = new AvatarTracker();
 
     this.mongoClient = mongoClient;
     this.retryAttempts = 3;
@@ -28,8 +28,8 @@ export class ChatService {
     this.BACKGROUND_CHECK_INTERVAL = 5 * 60000; // Check every minute
     this.backgroundInterval = null;
 
-    this.REFLECTION_INTERVAL = 3600000; // 1 hour
-    this.REFLECTION_SUMMARY_LIMIT = 5; // Keep last 5 reflections
+    this.REFLECTION_INTERVAL = 1 * 3600000; // 1 hour
+    this.reflectionTimer = 0; 
     this.AMBIENT_CHAT_INTERVAL = process.env.AMBIENT_CHAT_INTERVAL || 5 * 60000;
     this.guildTracking = new Map(); // guildId -> lastActivity timestamp
     this.avatarThreads = new Map(); // guildId -> avatarId -> threadId
@@ -44,6 +44,10 @@ export class ChatService {
 
     this.avatarService = avatarService; // Add this line - it was missing
     this.aiService = aiService; // Add this line - it was missing
+
+    this.responseQueue = new Map(); // channelId -> Set of avatarIds to respond
+    this.responseTimeout = null;
+    this.RESPONSE_DELAY = 3000; // Wait 3 seconds before processing responses
   }
 
   async setupWithRetry(attempt = 1) {
@@ -134,44 +138,35 @@ export class ChatService {
   }
 
   async respondAsAvatar(client, channel, avatar, force = false) {
-    // Validate channel and channel.id
-    if (!channel || !channel.id || typeof channel.id !== 'string') {
-      this.logger.error('Invalid channel provided to respondAsAvatar:', channel);
+    // Validate channel and avatar
+    if (!channel?.id || !avatar?.id) {
+      this.logger.error('Invalid channel or avatar provided to respondAsAvatar');
       return;
     }
 
-    this.logger.info(`Attempting to respond as avatar ${avatar?.name} in channel ${channel.id} (force: ${force})`);
-
     try {
-      if (!channel?.guild) {
-        this.logger.error('Channel has no guild property');
-        return;
+      this.logger.info(`Attempting to respond as avatar ${avatar.name} in channel ${channel.id} (force: ${force})`);
+      
+      // Always track that the avatar exists in this channel
+      if (!this.avatarTracker.isAvatarInChannel(channel.id, avatar.id)) {
+        this.avatarTracker.addAvatarToChannel(channel.id, avatar.id, channel.guild.id);
+        this.attentionManager.increaseAttention(channel.id, avatar.id, 1);
       }
 
-      // Ensure avatar has id (use _id if id is not present)
-      const avatarId = avatar.id || (avatar._id && avatar._id.toString());
-
-      // Validate avatar object
-      if (!avatarId || !avatar?.name) {
-        this.logger.error('Invalid avatar object:', JSON.stringify({ ...avatar, id: avatarId }, null, 2));
-        return;
-      }
-
-      // Add avatar to channel with guild ID
-      if (!this.avatarTracker.isAvatarInChannel(channel.id, avatarId)) {
-        this.avatarTracker.addAvatarToChannel(channel.id, avatarId, channel.guild.id);
-      }
-
+      // Check if response is allowed based on cooldowns/decisions
       const shouldRespond = force || await this.decisionMaker.shouldRespond(channel, avatar);
-
-      if (shouldRespond && this.conversationHandler.canRespond(channel.id)) {
+      
+      if (shouldRespond) {
         this.logger.info(`${avatar.name} decided to respond in ${channel.id}`);
         await this.conversationHandler.sendResponse(channel, avatar);
-        this.updateLastActiveGuild(avatarId, channel.guild.id);
+        this.updateLastActiveGuild(avatar.id, channel.guild.id);
+        // Track the response in DecisionMaker
+        this.decisionMaker.trackResponse(channel.id, avatar.id);
       }
+
     } catch (error) {
       this.logger.error(`Error in respondAsAvatar: ${error.message}`);
-      this.logger.error('Avatar data:', JSON.stringify(avatar, null, 2));
+      this.logger.error('Avatar data:', avatar);
     }
   }
 
@@ -184,12 +179,32 @@ export class ChatService {
       throw new Error('ChatService not properly initialized');
     }
 
+    // Force a random reflection on startup
+    const avatars = await this.messageProcessor.getActiveAvatars();
+    if (avatars.length > 0) {
+      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+      this.logger.info(`🎯 Forcing startup reflection for ${randomAvatar.name}`);
+      await this.generateReflection(randomAvatar);
+      await this.conversationHandler.generateNarrative(randomAvatar, { type: 'inner_monologue' });
+    }
+
     this.logger.info('✅ ChatService started.');
     this.interval = setIntervalAsync(() => this.checkMessages(), this.AMBIENT_CHAT_INTERVAL);
     this.backgroundInterval = setIntervalAsync(() => this.updateBackgroundConversations(), this.BACKGROUND_CHECK_INTERVAL);
+    this.idleCheckInterval = setInterval(() => this.checkForIdleChannels(), 5000);
+  }
 
-    // Add idle check interval
-    this.idleCheckInterval = setInterval(() => this.checkForIdleChannels(), 5000); // Check every 5 seconds
+  async triggerStartupReflection() {
+    try {
+      const avatars = await this.messageProcessor.getActiveAvatars();
+      if (!avatars.length) return;
+
+      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+      this.logger.info(`🌅 Triggering startup reflection for ${randomAvatar.name}`);
+      await this.generateReflection(randomAvatar);
+    } catch (error) {
+      this.logger.error('Error triggering startup reflection:', error);
+    }
   }
 
   async stop() {
@@ -267,98 +282,27 @@ export class ChatService {
     }
   }
 
-  async introduceAvatar(avatar, guildId) {
-    try {
-      const guild = await this.client.guilds.fetch(guildId);
-      const avatarChannel = guild.channels.cache.find(c => c.name === 'avatars');
-
-      if (!avatarChannel) return null;
-
-      const thread = await avatarChannel.threads.create({
-        name: `${avatar.name}'s Space`,
-        autoArchiveDuration: 60,
-      });
-
-      this.avatarThreads.get(guildId).set(avatar.id, thread.id);
-
-      const introduction = `# ${avatar.name} ${avatar.emoji}\n\n` +
-        `**Description:** ${avatar.description}\n\n` +
-        `**Personality:** ${avatar.personality}\n\n` +
-        `**Self Introduction:**\n${avatar.dynamicPersonality}\n\n` +
-        `**Image:** ${avatar.imageUrl}`;
-
-      await thread.send(introduction);
-      return thread;
-    } catch (error) {
-      this.logger.error(`Failed to introduce avatar ${avatar.name} in guild ${guildId}:`, error);
-    }
-  }
-
   updateLastActiveGuild(avatarId, guildId) {
     this.lastActiveGuild.set(avatarId, guildId);
     this.guildTracking.set(guildId, Date.now());
   }
 
-  async generateCrossGuildReflection(avatar) {
-    const allChannels = this.avatarTracker.getAvatarChannels(avatar.id);
-    const recentInteractions = await this.getRecentCrossGuildInteractions(avatar.id, allChannels);
-
-    const reflectionPrompt = `Based on your interactions across multiple communities:
-      1. What patterns or themes have you noticed?
-      2. How have different communities shaped your perspective?
-      3. What connections have you made with others?
-      4. What are your current thoughts and feelings?
-      
-      Recent interactions: ${JSON.stringify(recentInteractions)}`;
-
-    const reflection = await this.aiService.chat([
-      { role: 'system', content: `You are ${avatar.name}. ${avatar.personality}\nPrevious reflections summary: ${avatar.reflectionsSummary || 'None yet.'}` },
-      { role: 'user', content: reflectionPrompt }
-    ]);
-
-    // Post reflection in last active guild
-    const lastGuildId = this.lastActiveGuild.get(avatar.id);
-    if (lastGuildId && this.avatarThreads.get(lastGuildId)?.has(avatar.id)) {
-      const threadId = this.avatarThreads.get(lastGuildId).get(avatar.id);
-      const thread = await this.client.channels.fetch(threadId);
-      await thread.send(`## Cross-Guild Reflection\n${reflection}`);
-    }
-
-    const reflectionData = {
-      timestamp: Date.now(),
-      reflection,
-      guildName: this.client.guilds.cache.get(lastGuildId)?.name || 'Unknown Guild'
-    };
-
-    // Update avatar's reflection history
-    if (!avatar.reflectionHistory) avatar.reflectionHistory = [];
-    avatar.reflectionHistory.unshift(reflectionData);
-    avatar.reflectionHistory = avatar.reflectionHistory.slice(0, this.REFLECTION_SUMMARY_LIMIT);
-
-    // Create consolidated summary
-    avatar.reflectionsSummary = avatar.reflectionHistory
-      .map(r => `[${new Date(r.timestamp).toLocaleDateString()}] ${r.guildName}: ${r.reflection}`)
-      .join('\n\n');
-
-    await this.avatarService.updateAvatar(avatar);
-
-    return reflection;
+  async generateReflection(avatar) {
+    const channels = this.avatarTracker.getAvatarChannels(avatar.id);
+    await this.conversationHandler.generateNarrative(avatar, {
+      type: 'reflection',
+      crossGuild: true,
+      channelIds: channels
+    });
   }
 
-  async getRecentCrossGuildInteractions(avatarId, channelIds) {
-    const recentMessages = [];
-    for (const channelId of channelIds) {
-      const channel = await this.client.channels.fetch(channelId);
-      const messages = await channel.messages.fetch({ limit: 20 });
-      const guildMessages = messages.map(m => ({
-        content: m.content,
-        author: m.author.username,
-        guildName: channel.guild.name,
-        channelName: channel.name
-      }));
-      recentMessages.push(...guildMessages);
-    }
-    return recentMessages;
+  setupReflectionInterval() {
+    setInterval(async () => {
+      const avatars = await this.messageProcessor.getActiveAvatars();
+      for (const avatar of avatars) {
+        await this.generateReflection(avatar);
+      }
+    }, this.REFLECTION_INTERVAL);
   }
 
   async setupAvatarChannel() {
@@ -379,39 +323,6 @@ export class ChatService {
     }
   }
 
-  async generateReflection(avatar) {
-    const channels = this.avatarTracker.getAvatarChannels(avatar.id);
-    const recentMessages = await Promise.all(
-      channels.map(async channelId => {
-        const channel = await this.client.channels.fetch(channelId);
-        const messages = await channel.messages.fetch({ limit: 50 });
-        return messages.map(m => ({
-          content: m.content,
-          author: m.author.username
-        }));
-      })
-    );
-
-    const prompt = `Based on these recent interactions, reflect on your experiences and growth. What have you learned? What connections have you made? Share your thoughts and feelings.`;
-
-    const reflection = await this.aiService.chat([
-      { role: 'system', content: `You are ${avatar.name}. ${avatar.personality}` },
-      { role: 'user', content: prompt }
-    ]);
-
-    const thread = await this.client.channels.fetch(avatar.threadId);
-    await thread.send(`## Personal Reflection\n${reflection}`);
-  }
-
-  setupReflectionInterval() {
-    setInterval(async () => {
-      const avatars = await this.messageProcessor.getActiveAvatars();
-      for (const avatar of avatars) {
-        await this.generateReflection(avatar);
-      }
-    }, this.REFLECTION_INTERVAL);
-  }
-
   updateLastMessageTime() {
     this.lastMessageTime = Date.now();
   }
@@ -419,14 +330,17 @@ export class ChatService {
   async checkForIdleChannels() {
     const now = Date.now();
     if (now - this.lastMessageTime >= this.IDLE_TIMEOUT) {
+      // Check for inner monologue updates first
+      const avatars = await this.messageProcessor.getActiveAvatars();
+      await this.conversationHandler.checkIdleUpdate(avatars);
+
+      // Pick a random channel
       const activeChannels = await this.messageProcessor.getActiveChannels(this.client);
       if (activeChannels.length === 0) return;
 
-      // Pick a random channel
       const randomChannel = activeChannels[Math.floor(Math.random() * activeChannels.length)];
 
-      // Get available avatars
-      const avatars = await this.messageProcessor.getActiveAvatars();
+      // Use the already fetched avatars array instead of fetching again
       if (avatars.length === 0) return;
 
       // Pick a random avatar
@@ -438,12 +352,21 @@ export class ChatService {
       // Reset the timer
       this.updateLastMessageTime();
     }
-  } // Added closing brace for checkForIdleChannels
+  }
 
   markChannelActivity(channelId, mentionsAvatar = false) {
     // Track message count for attention decay
     this.attentionManager.trackMessage(channelId);
     
+    // Get recently active avatars and increase their attention
+    const recentlyActive = this.decisionMaker.getRecentlyActiveAvatars(channelId);
+    for (const avatarId of recentlyActive) {
+      const increase = 0.15; // Smaller increase for non-mentioned avatars
+      this.attentionManager.increaseAttention(channelId, avatarId, increase);
+      this.logger.info(`Increasing attention for recently active avatar ${avatarId} in ${channelId}`);
+    }
+
+    // Also handle avatars in channel as before
     const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(channelId);
     for (const avatarId of avatarsInChannel) {
       const increase = mentionsAvatar ? 0.4 : 0.1;
@@ -454,7 +377,6 @@ export class ChatService {
     for (const avatarId of avatarsInChannel) {
       const increase = mentionsAvatar ? 0.4 : 0.1;
       this.attentionManager.increaseAttention(channelId, avatarId, increase);
-      this.logger.error('Invalid channelId provided to handleMention:', channelId);
     }
     return;
   }

@@ -1,8 +1,37 @@
+import { time } from "discord.js";
+
 export class DecisionMaker {
   constructor(aiService, logger, attentionManager) {
     this.aiService = aiService;
     this.logger = logger;
     this.attentionManager = attentionManager;
+    this.recentResponses = new Map(); // channelId -> Map<avatarId, timestamp>
+    this.RECENT_WINDOW = 5 * 60 * 1000; // 5 minutes
+    this.botMentionDebounce = new Map(); // avatarId -> timestamp
+    this.BOT_MENTION_COOLDOWN = 30000; // 30 seconds
+  }
+
+  trackResponse(channelId, avatarId) {
+    if (!this.recentResponses.has(channelId)) {
+      this.recentResponses.set(channelId, new Map());
+    }
+    this.recentResponses.get(channelId).set(avatarId, Date.now());
+  }
+
+  getRecentlyActiveAvatars(channelId) {
+    const recent = this.recentResponses.get(channelId);
+    if (!recent) return [];
+
+    const now = Date.now();
+    const activeAvatars = [];
+
+    for (const [avatarId, timestamp] of recent) {
+      if (now - timestamp < this.RECENT_WINDOW) {
+        activeAvatars.push(avatarId);
+      }
+    }
+
+    return activeAvatars;
   }
 
   async shouldRespond(channel, avatar) {
@@ -14,12 +43,32 @@ export class DecisionMaker {
 
     // get the latest few messages in the channel
     const channelMessages = await channel.messages.fetch({ limit: 5 });
+    const lastMessage = channelMessages.first();
+
+    // If last message is from a bot and mentions the avatar
+    if (lastMessage?.author.bot) {
+      const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
+                              (avatar.emoji && lastMessage.content.includes(avatar.emoji));
+      
+      if (isAvatarMentioned) {
+        // Check debounce
+        const lastBotMention = this.botMentionDebounce.get(avatar.id);
+        if (lastBotMention && Date.now() - lastBotMention < this.BOT_MENTION_COOLDOWN) {
+          // Increase attention but don't respond
+          this.attentionManager.increaseAttention(channel.id, avatar.id, 0.2);
+          return false;
+        }
+        // Update debounce timer
+        this.botMentionDebounce.set(avatar.id, Date.now());
+      }
+    }
+
     // calculate the percentage of messages that are from .bot
     const botMessageCount = channelMessages.filter(m => m.author.bot).size;
     const botMessagePercentage = botMessageCount / channelMessages.size;
 
     // randomly decide whether to respond based on the bot message percentage
-    const shouldRespond = Math.random() > botMessagePercentage;
+    const shouldRespond = !lastMessageAuthorBot || Math.random() > botMessagePercentage;
     if (!shouldRespond) {
       console.log('Bot message percentage:', botMessagePercentage);
       return false;
@@ -33,6 +82,12 @@ export class DecisionMaker {
     }
 
     try {
+      // Consider recent activity in attention decisions
+      const isRecentlyActive = this.getRecentlyActiveAvatars(channel.id).includes(avatar.id);
+      if (isRecentlyActive) {
+        this.attentionManager.increaseAttention(channel.id, avatar.id, 0.2);
+      }
+
       // Use unified attention manager decision
       const shouldRespond = this.attentionManager.shouldRespond(channel.id, avatarId);
       
@@ -55,11 +110,40 @@ export class DecisionMaker {
     }
   }
 
+  avatarLastCheck = {};
   async makeDecision(avatar, context, isBackground = false) {
+
+    this.avatarLastCheck[avatar._id] = this.avatarLastCheck[avatar._id] || {
+      decision: 'NO',
+      timestamp: Date.now()
+    }
+
+    // if the last decision was made less than 5 minutes ago, return the same decision
+    if (Date.now() - this.avatarLastCheck[avatar._id].timestamp < 5 * 60 * 1000) {
+      return this.avatarLastCheck[avatar._id];
+    }
+
+
     // if the last message was from the avatar, don't respond
     if (context.length && context[context.length - 1].role === 'assistant' && `${context[context.length - 1].content}`.startsWith(avatar.name + ':')) {
       return { decision: 'NO', reason: 'Last message was from the avatar.' };
     }
+
+    // if the last four messages were from bots, don't respond
+    if (context.length >= 4 && context.every(m => m.role === 'assistant')) {
+      return { decision: 'NO', reason: 'Last four messages were from bots.' };
+    }
+
+    // if the last message mentioned the avatar, respond
+    if (context.length && `${context[context.length - 1].content}`.toLowerCase().includes(avatar.name.toLowerCase())) {
+      return { decision: 'YES', reason: 'Last message mentioned the avatar.' };
+    }
+
+    // if the last message mentioned the avatars emoji, respond
+    if (context.length && `${context[context.length - 1].content}`.includes(avatar.emoji)) {
+      return { decision: 'YES', reason: 'Last message mentioned the avatar emoji.' };
+    }
+
     const decisionPrompt = [
       ...context,
       {
@@ -86,7 +170,7 @@ export class DecisionMaker {
 
     try {
       const aiResponse = await this.aiService.chat(decisionPrompt);
-      console.log('AI response:', aiResponse);
+      console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
       const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'YES' } : { decision: 'NO' };
       decision.reason = aiLines.slice(0, -1).join('\n').trim();
