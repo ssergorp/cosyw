@@ -88,7 +88,11 @@ export class AttentionManager {
   }
 
   shouldRespond(channelId, avatarId) {
-    const attention = this.attentionLevels.get(channelId)?.get(avatarId) || 0;
+    if (!this.attentionLevels.has(channelId)) {
+      this.attentionLevels.set(channelId, new Map());
+      this.attentionLevels.get(channelId).set(avatarId, 0.5);
+    }
+    const attention = this.attentionLevels.get(channelId)?.get(avatarId) || 0.5;
     const random = Math.random();
     return random < (attention + 0.1); // Small chance to respond even with low attention
   }

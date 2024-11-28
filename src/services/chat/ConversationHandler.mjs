@@ -190,6 +190,10 @@ Describe:
         guildName: channel.guild.name
       };
 
+      if (!avatar.model) {
+        avatar.model = await this.aiService.selectRandomModel();
+      }
+
       // Generate response using AI service
       const response = await this.aiService.chat([
         {
@@ -202,7 +206,9 @@ Describe:
             context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
           }\n\nSend a message to the chat as ${avatar.name}, advancing your goals and keeping the chat interesting. Keep your responses in character and SHORT (no more than two or three sentences and *actions*).`
         }
-      ]);
+      ], {
+        model: avatar.model
+      });
 
       // Send response through webhook
       await sendAsWebhook(this.client, channelId, response, avatar.name, avatar.imageUrl);

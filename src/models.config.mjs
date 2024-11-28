@@ -29,7 +29,7 @@ const models = [
     },
     {
       "model": "anthropic/claude-3.5-haiku:beta",
-      "rarity": "rare"
+      "rarity": "uncommon"
     },
     {
       "model": "neversleep/llama-3.1-lumimaid-70b",
@@ -46,6 +46,22 @@ const models = [
     {
       "model": "pygmalionai/mythalion-13b",
       "rarity": "uncommon"
+    },
+    {
+      "model": "qwen/qwq-32b-preview",
+      "rarity": "uncommon"
+    },
+    {
+      "model": "eva-unit-01/eva-qwen-2.5-72b",
+      "rarity": "uncommon"
+    },
+    {
+      "model": "gryphe/mythomax-l2-13b",
+      "rarity": "common"
+    },
+    {
+      "model": "google/gemini-flash-1.5-8b",
+      "rarity": "common"
     }
   ];
 

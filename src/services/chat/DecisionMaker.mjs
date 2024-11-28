@@ -68,9 +68,9 @@ export class DecisionMaker {
     const botMessagePercentage = botMessageCount / channelMessages.size;
 
     // randomly decide whether to respond based on the bot message percentage
-    const shouldRespond = !lastMessage.author.bot || Math.random() > botMessagePercentage;
+    const shouldRespond = !lastMessage.author.bot || Math.random() > (botMessagePercentage / 2);
     if (!shouldRespond) {
-      console.log('Bot message percentage:', botMessagePercentage);
+      console.log('Bot message percentage:', botMessagePercentage /2);
       return false;
     }
 
