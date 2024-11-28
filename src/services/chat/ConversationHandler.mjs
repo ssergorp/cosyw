@@ -47,7 +47,7 @@ export class ConversationHandler {
 
       const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
       const narrative = await this.aiService.chat([
-        { role: 'system', content: `You are ${avatar.name}. ${avatar.personality}` },
+        { role: 'system', content: avatar.prompt || `You are ${avatar.name}. ${avatar.personality}` },
         { role: 'user', content: prompt }
       ]);
 

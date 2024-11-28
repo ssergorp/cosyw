@@ -127,15 +127,24 @@ async function saveMessageToDatabase(message) {
  * @param {Array} args - The arguments provided with the command.
  */
 async function handleCreateCommand(message, args) {
-
-  await reactToMessage(client, message.channel.id, message.id, '👍');
-  const prompt = args.join(' ') || 'create a new avatar, use your imagination!';
+  let prompt = args.join(' ');
+  // If no prompt provided, check for default Arweave prompt URL in env
+  if (!prompt && process.env.DEFAULT_AVATAR_PROMPT_URL) {
+    prompt = process.env.DEFAULT_AVATAR_PROMPT_URL;
+  } else if (!prompt) {
+    prompt = 'create a new avatar, use your imagination!';
+  }
 
   try {
     const avatarData = {
       prompt: sanitizeInput(prompt),
       channelId: message.channel.id,
     };
+
+    // Check if prompt is an Arweave URL
+    if (prompt.match(/^(https:\/\/.*\.arweave\.net\/|ar:\/\/)/)) {
+      avatarData.arweave_prompt = prompt;
+    }
 
     const createdAvatar = await avatarService.createAvatar(avatarData);
     createdAvatar.id = createdAvatar.id || createdAvatar._id.toString();
@@ -257,13 +266,9 @@ async function handleCommands(message, args) {
       client,
       message.channel.id,
       'Hello from the webhook!',
-      'Custom Bot',
-      'https://d7xbminy5txaa.cloudfront.net/images/72db3459c19343c69c5ecf895983dbdbd22ad9f1504f2403074014cdf9bf15e1.png'
-    );
-  }
-
-  if (message.content === '!recent') {
-    const messages = await getRecentMessages(client, message.channel.id);
+      'Custom Bot'
+    ); // Added missing closing parenthesis and semicolon
+    
     if (messages && messages.length > 0) {
       const recentMessages = messages
         .map((msg) => `${msg.author.username}: ${msg.content}`)
@@ -416,12 +421,16 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 let chatService;
 
 // Fix the IIFE syntax and add error handling
-(async function main() {
+async function main() {
   try {
-    // Connect to database first
     await connectToDatabase();
-    logger.info('✅ Database connection established');
-
+    logger.info('✅ Connected to database successfully');
+    
+    // Update all Arweave prompts
+    logger.info('Updating Arweave prompts for avatars...');
+    await avatarService.updateAllArweavePrompts();
+    logger.info('✅ Arweave prompts updated successfully');
+    
     // Initialize chat service
     chatService = new ChatService(client, mongoClient, {
       logger,
@@ -446,7 +455,9 @@ let chatService;
     logger.error(`Fatal startup error: ${error.stack || error.message}`);
     await shutdown('STARTUP_ERROR');
   }
-})().catch(error => {
+}
+
+main().catch(error => {
   console.error('Unhandled startup error:', error);
   process.exit(1);
 });

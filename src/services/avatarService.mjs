@@ -13,6 +13,8 @@ import { extractJSON } from './utils.mjs';
 import { uploadImage } from './s3imageService.mjs';
 
 import fs from 'fs/promises';
+import { ArweaveService } from './arweaveService.mjs';
+import fetch from 'node-fetch';
 
 export class AvatarGenerationService {
   constructor() {
@@ -50,8 +52,11 @@ export class AvatarGenerationService {
       api_key: process.env.CLOUDINARY_API_KEY,
       api_secret: process.env.CLOUDINARY_API_SECRET,
     });
-  }
 
+    this.arweaveService = new ArweaveService();
+    this.prompts = null;
+  }
+  
   /**
    * Connects the service to the MongoDB database.
    */
@@ -59,6 +64,7 @@ export class AvatarGenerationService {
     try {
       await this.mongoClient.connect();
       this.db = this.mongoClient.db(this.DB_NAME);
+      this.avatarsCollection = this.db.collection(this.AVATARS_COLLECTION);
       this.logger.info('AvatarGenerationService connected to the MongoDB database.');
     } catch (error) {
       this.logger.error(`Failed to connect to MongoDB: ${error.message}`);
@@ -294,6 +300,11 @@ export class AvatarGenerationService {
     }
 
     try {
+      // Sync Arweave prompt if it exists
+      if (avatar.arweave_prompt) {
+        await this.syncArweavePrompt(avatar);
+      }
+
       // Prepare the update document
       const updateDoc = {
         $set: {
@@ -356,7 +367,27 @@ export class AvatarGenerationService {
    * @param {string} [avatarData.channelId] - The Discord channel ID associated with the avatar.
    * @returns {Object|null} - The created avatar document or null if creation failed.
    */
-  async createAvatar({ prompt, channelId = null }) {
+  async createAvatar(data) {
+    let prompt = data.prompt;
+    let systemPrompt;
+
+    try {
+      if (this.arweaveService.isArweaveUrl(prompt)) {
+        // Load prompt from Arweave
+        const arweaveData = await this.arweaveService.fetchPrompt(prompt);
+        systemPrompt = arweaveData.systemPrompt;
+        prompt = arweaveData.prompt || prompt;
+      }
+
+      // Proceed with avatar creation using either Arweave data or original prompt
+      return await this._createAvatarWithPrompt(prompt, systemPrompt, data);
+    } catch (error) {
+      throw new Error(`Avatar creation failed: ${error.message}`);
+    }
+  }
+
+  async _createAvatarWithPrompt(prompt, systemPrompt, data) {
+
     if (!this.db) {
       this.logger.error('Database is not connected. Cannot create avatar.');
       return null;
@@ -364,7 +395,7 @@ export class AvatarGenerationService {
 
     try {
       // Step 1: Check Daily Limit
-      const underLimit = await this.checkDailyLimit(channelId);
+      const underLimit = await this.checkDailyLimit(data.channelId);
       if (!underLimit) {
         this.logger.warn('Daily limit reached. Cannot create more avatars today.');
         return null;
@@ -395,7 +426,7 @@ export class AvatarGenerationService {
       console.log('S3 URL:', s3url);
 
       // Step 6: Insert the Prompt and Result into MongoDB
-      await this.insertRequestIntoMongo(avatar.description, s3url, channelId);
+      await this.insertRequestIntoMongo(avatar.description, s3url, data.channelId);
 
       // Step 7: Create Avatar Document
       const avatarDocument = {
@@ -404,9 +435,18 @@ export class AvatarGenerationService {
         personality: avatar.personality,
         description: avatar.description,
         imageUrl: s3url,
-        channelId,
+        channelId: data.channelId,
         createdAt: new Date(),
       };
+
+      // Check for Arweave prompt before generating
+      if (data.arweave_prompt) {
+        avatarDocument.arweave_prompt = data.arweave_prompt;
+        const syncedPrompt = await this.syncArweavePrompt(avatarDocument);
+        if (syncedPrompt) {
+          avatarDocument.prompt = syncedPrompt;
+        }
+      }
 
       // Step 8: Insert Avatar into the 'avatars' Collection
       const result = await this.db.collection(this.AVATARS_COLLECTION).insertOne(avatarDocument);
@@ -481,5 +521,68 @@ export class AvatarGenerationService {
   // Add a method to generate unique IDs
   generateUniqueId() {
     return new ObjectId().toString();
+  }
+
+  async syncArweavePrompt(avatar) {
+    if (!avatar.arweave_prompt || !this.isValidUrl(avatar.arweave_prompt)) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(avatar.arweave_prompt);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch Arweave prompt: ${response.statusText}`);
+      }
+      const prompt = await response.text();
+      
+      // Update the avatar's prompt
+      await this.avatarsCollection.updateOne(
+        { _id: avatar._id },
+        { $set: { prompt: prompt.trim() } }
+      );
+
+      return prompt.trim();
+    } catch (error) {
+      console.error(`Error syncing Arweave prompt: ${error.message}`);
+      return null;
+    }
+  }
+
+  isValidUrl(string) {
+    try {
+      new URL(string);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async updateAllArweavePrompts() {
+    if (!this.db) {
+      this.logger.error('Database is not connected. Cannot update Arweave prompts.');
+      return;
+    }
+
+    try {
+      const avatarsCollection = this.db.collection(this.AVATARS_COLLECTION);
+      const avatarsWithArweave = await avatarsCollection.find({
+        arweave_prompt: { $exists: true, $ne: null }
+      }).toArray();
+
+      this.logger.info(`Found ${avatarsWithArweave.length} avatars with Arweave prompts to update`);
+
+      for (const avatar of avatarsWithArweave) {
+        try {
+          const syncedPrompt = await this.syncArweavePrompt(avatar);
+          if (syncedPrompt) {
+            this.logger.info(`Updated Arweave prompt for avatar: ${avatar.name}`);
+          }
+        } catch (error) {
+          this.logger.error(`Failed to update Arweave prompt for avatar ${avatar.name}: ${error.message}`);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error updating Arweave prompts: ${error.message}`);
+    }
   }
 }
