@@ -9,6 +9,8 @@ export class AttentionManager {
     this.attentionThreshold = 0.4; // Threshold for deciding to respond
     this.decayRate = 0.1; // Rate at which attention decays
     this.channelAttention = new Map();
+    this.avatarMessages = new Map(); // messageId -> avatarId
+    this.messageExpiry = 24 * 60 * 60 * 1000; // 24 hours
     
     // Start decay interval
     setInterval(() => this.decayAttention(), this.ATTENTION_CHECK_INTERVAL);
@@ -60,6 +62,35 @@ export class AttentionManager {
     return this.messageCounter.has(`${channelId}-${avatarId}`);
   }
 
+  trackAvatarMessage(messageId, avatarId) {
+    this.avatarMessages.set(messageId, {
+      avatarId,
+      timestamp: Date.now()
+    });
+  }
+
+  getMessageAuthorAvatar(messageId) {
+    const entry = this.avatarMessages.get(messageId);
+    if (!entry) return null;
+    
+    // Check if message is expired
+    if (Date.now() - entry.timestamp > this.messageExpiry) {
+      this.avatarMessages.delete(messageId);
+      return null;
+    }
+    
+    return entry.avatarId;
+  }
+
+  cleanupExpiredMessages() {
+    const now = Date.now();
+    for (const [messageId, entry] of this.avatarMessages.entries()) {
+      if (now - entry.timestamp > this.messageExpiry) {
+        this.avatarMessages.delete(messageId);
+      }
+    }
+  }
+
   decayAttention() {
     for (const [key, level] of this.attentionLevels.entries()) {
       const newLevel = Math.max(0, level - this.ATTENTION_DECAY);
@@ -70,6 +101,7 @@ export class AttentionManager {
         this.attentionLevels.set(key, newLevel);
       }
     }
+    this.cleanupExpiredMessages(); // Add cleanup to decay cycle
   }
 
   shouldForceRespond(channelId, avatarId) {

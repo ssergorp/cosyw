@@ -1,4 +1,4 @@
-import { time } from "discord.js";
+const DECISION_MODEL = 'meta-llama/llama-3.2-1b-instruct';
 
 export class DecisionMaker {
   constructor(aiService, logger, attentionManager) {
@@ -169,7 +169,7 @@ export class DecisionMaker {
     ];
 
     try {
-      const aiResponse = await this.aiService.chat(decisionPrompt);
+      const aiResponse = await this.aiService.chat(decisionPrompt, { model: DECISION_MODEL });
       console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
       const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'YES' } : { decision: 'NO' };

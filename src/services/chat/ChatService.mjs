@@ -13,7 +13,7 @@ export class ChatService {
 
     this.avatarTracker = new AvatarTracker(this.client, this.logger);
     this.attentionManager = new AttentionManager(logger);
-    this.conversationHandler = new ConversationHandler(client, aiService, logger, this.avatarTracker);
+    this.conversationHandler = new ConversationHandler(client, aiService, logger, this.avatarTracker, avatarService);
     this.decisionMaker = new DecisionMaker(aiService, logger, this.attentionManager);
     this.messageProcessor = new MessageProcessor(avatarService);
 

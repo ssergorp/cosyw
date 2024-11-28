@@ -2,7 +2,7 @@ import { sendAsWebhook } from '../discordService.mjs';
 import { MongoClient } from 'mongodb';
 
 export class ConversationHandler {
-  constructor(client, aiService, logger, avatarTracker) {
+  constructor(client, aiService, logger, avatarTracker, avatarService) {
     this.client = client;
     this.aiService = aiService;
     this.logger = logger;
@@ -12,6 +12,7 @@ export class ConversationHandler {
     this.IDLE_TIME = 60 * 60 * 1000; // 1 hour
     this.lastUpdate = Date.now();
     this.avatarTracker = avatarTracker;
+    this.avatarService = avatarService;
 
     // Add response cooldown tracking
     this.responseCooldowns = new Map(); // avatarId -> channelId -> timestamp
@@ -45,11 +46,15 @@ export class ConversationHandler {
         return;
       }
 
+      if (!avatar.model) {
+        this.aiService.selectRandomModel();
+        await this.avatarService.updateAvatar(avatar);
+      }
       const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
       const narrative = await this.aiService.chat([
         { role: 'system', content: avatar.prompt || `You are ${avatar.name}. ${avatar.personality}` },
         { role: 'user', content: prompt }
-      ]);
+      ], { model: avatar.model });
 
       const thread = await this.getOrCreateThread(avatar);
       if (thread) {
@@ -192,6 +197,7 @@ Describe:
 
       if (!avatar.model) {
         avatar.model = await this.aiService.selectRandomModel();
+        await this.avatarService.updateAvatar(avatar);
       }
 
       // Generate response using AI service
@@ -210,8 +216,13 @@ Describe:
         model: avatar.model
       });
 
-      // Send response through webhook
-      await sendAsWebhook(this.client, channelId, response, avatar.name, avatar.imageUrl);
+      // Send response through webhook and get the message object back
+      const sentMessage = await sendAsWebhook(this.client, channelId, response, avatar.name, avatar.imageUrl);
+      
+      // Track the sent message
+      if (sentMessage && this.avatarTracker) {
+        this.avatarTracker.trackAvatarMessage(sentMessage.id, avatarId);
+      }
       
       // Update cooldown
       this.updateResponseCooldown(avatarId, channelId);

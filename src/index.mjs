@@ -157,6 +157,10 @@ async function handleCreateCommand(message, args) {
       const replyContent = `✅ **Avatar "${createdAvatar.name}"** created successfully! 🎉\n**Traits:** ${createdAvatar.personality}\n**Description:** ${createdAvatar.description}\n**Image:** ${createdAvatar.imageUrl}`;
       await replyToMessage(client, message.channel.id, message.id, replyContent);
 
+      if (!createdAvatar.model) {
+        createdAvatar.model = this.aiService.selectRandomModel();
+      }
+
       let intro = await aiService.chat([
         { role: 'system', content: `
           You are the  avatar ${createdAvatar.name}.
@@ -164,7 +168,7 @@ async function handleCreateCommand(message, args) {
           ${createdAvatar.personality}
         ` },
         { role: 'user', content: `What's your avatar name? And what makes you unique in the digital realm?` }
-      ]);
+      ], { model: createdAvatar.model });
 
       createdAvatar.dynamicPersonality = intro;
       await avatarService.updateAvatar(createdAvatar);
@@ -306,8 +310,7 @@ async function handleCommands(message, args) {
 client.on('messageCreate', async (message) => {
   try {
 
-    
-    // Only process commands for non-bot messages
+    //  process commands 
     if (message.content.startsWith('!')) {
       const [command, ...args] = message.content.slice(1).split(' ');
       await handleCommands(message, args);
@@ -326,15 +329,23 @@ client.on('messageCreate', async (message) => {
       chatService.markChannelActivity(message.channel.id);
     }
 
-    // Get all avatars and check for mentions
-    const avatars = await avatarService.getAllAvatars();
-    logger.info(`Retrieved ${avatars?.length || 0} avatars from database`);
-    
-    if (!avatars?.length) {
-      logger.warn('No avatars available');
-      return;
+    // Remove the old reply check code and replace with:
+    if (message.reference && message.reference.messageId) {
+      const repliedMessageId = message.reference.messageId;
+      const repliedAvatarId = chatService.attentionManager.getMessageAuthorAvatar(repliedMessageId);
+      
+      if (repliedAvatarId) {
+        const repliedAvatar = avatars.find(a => (a.id || a._id?.toString()) === repliedAvatarId);
+        if (repliedAvatar) {
+          logger.info(`Processing reply to avatar message: ${repliedAvatar.name} (${repliedAvatarId})`);
+          chatService.handleMention(message.channel.id, repliedAvatarId);
+          await chatService.respondAsAvatar(client, message.channel, repliedAvatar, !message.author.bot);
+        }
+      }
     }
 
+    // Continue with regular mention handling
+    const avatars = await avatarService.getAllAvatars();
     const mentionedAvatars = extractMentionedAvatars(message.content, avatars);
 
     logger.info(`Message received: "${message.content}" - Mentioned avatars: ${Array.from(mentionedAvatars).map(a => a.name).join(', ')}`);
