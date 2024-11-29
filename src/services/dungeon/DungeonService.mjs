@@ -254,11 +254,44 @@ export class DungeonService {
   }
 
   async getAvatar(avatarId) {
+    const client = new MongoClient(process.env.MONGO_URI);
     try {
-      return await this.avatarService?.getAvatar(avatarId) || null;
-    } catch (error) {
-      this.logger.error(`Error getting avatar: ${error.message}`);
+      await client.connect();
+      const db = client.db('discord');
+      
+      // First try AvatarManager
+      const avatarFromManager = await this.avatarService?.getAvatar(avatarId);
+      if (avatarFromManager) {
+        return avatarFromManager;
+      }
+
+      // If not found, try direct database lookup
+      const avatar = await db.collection('avatars').findOne({ id: avatarId });
+      if (avatar) {
+        return avatar;
+      }
+
+      // If still not found, check if we have any stats for this avatar
+      const stats = await this.getAvatarStats(avatarId);
+      if (stats) {
+        // Create basic avatar data if we have stats
+        const user = await this.client.users.fetch(avatarId).catch(() => null);
+        return {
+          id: avatarId,
+          name: user?.username || 'Unknown Traveler',
+          personality: 'mysterious traveler',
+          stats: stats
+        };
+      }
+
+      this.logger?.debug(`No avatar found for ID: ${avatarId}`);
       return null;
+
+    } catch (error) {
+      this.logger?.error(`Error getting avatar: ${error.message}`);
+      throw error; // Re-throw to handle in MoveTool
+    } finally {
+      await client.close();
     }
   }
 

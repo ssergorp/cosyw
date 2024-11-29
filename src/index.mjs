@@ -347,36 +347,30 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // Handle avatar mentions
+    // Handle avatar mentions - only if they're in the channel
     const avatars = await avatarService.getAllAvatars();
-    const mentionedAvatars = extractMentionedAvatars(message.content, avatars);
-
-    logger.info(`Message received: "${message.content}" - Mentioned avatars: ${Array.from(mentionedAvatars).map(a => a.name).join(', ')}`);
+    const mentionedAvatars = extractMentionedAvatars(message.content, avatars)
+      .filter(avatar => chatService.avatarTracker.isAvatarInChannel(message.channel.id, avatar.id));
 
     if (mentionedAvatars.size > 0) {
       for (const avatar of mentionedAvatars) {
-        if (message.author.bot && Math.random() > 0.3) {
-          logger.info('Skipping avatar response to bot message');
-          continue;
-        }
         const avatarId = avatar.id || avatar._id.toString();
-        if (!avatarId) {
-          logger.error('Invalid avatar data:', JSON.stringify(avatar, null, 2));
-          continue;
-        }
-        logger.info(`Processing mention for avatar: ${avatar.name} (ID: ${avatarId})`);
-        // Pass the user ID who mentioned the avatar
         chatService.attentionManager.handleMention(message.channel.id, avatarId, message.author.id);
-        await chatService.conversationHandler.sendResponse(message.channel, avatar, true);
+        await chatService.conversationHandler.sendResponse(message.channel, avatar, true, null, message.author.bot);
       }
     } else {
-      // Check for ambient responses from avatars in channel
+      // Check for ambient responses only from avatars in this channel
       const avatarsInChannel = chatService.avatarTracker.getAvatarsInChannel(message.channel.id);
       for (const avatarId of avatarsInChannel) {
         const avatar = avatars.find(a => a.id === avatarId);
         if (avatar) {
-          // Pass the current message author's ID
-          await chatService.conversationHandler.sendResponse(message.channel, avatar, false, message.author.id);
+          await chatService.conversationHandler.sendResponse(
+            message.channel, 
+            avatar, 
+            false, 
+            message.author.id,
+            message.author.bot
+          );
         }
       }
     }
@@ -384,6 +378,12 @@ client.on('messageCreate', async (message) => {
     // Track message with author ID
     if (chatService) {
       chatService.markChannelActivity(message.channel.id, false, message.author.id);
+    }
+
+    // Track message for location summaries if in a location thread
+    if (message.channel.isThread()) {
+      const locationService = chatService.dungeonService.locationService;
+      await locationService.trackLocationMessage(message.channel.id, message);
     }
 
   } catch (error) {

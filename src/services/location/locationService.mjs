@@ -21,6 +21,11 @@ export class LocationService {
     this.replicate = new Replicate({
       auth: process.env.REPLICATE_API_TOKEN
     });
+
+    // Add message tracking
+    this.locationMessages = new Map(); // locationId -> {count: number, messages: Array}
+    this.SUMMARY_THRESHOLD = 100; // Messages before generating summary
+    this.MAX_STORED_MESSAGES = 50; // Keep last 50 messages for context
   }
   // Function to download image
   async downloadImage(url) {
@@ -67,6 +72,19 @@ export class LocationService {
   }
 
   async generateDepartureMessage(avatar, currentLocation, newLocation) {
+    // If no image exists for the current location, generate one
+    if (!currentLocation.imageUrl) {
+      try {
+        const locationDescription = await this.aiService.chat([
+          { role: 'system', content: 'Generate a brief description of this location.' },
+          { role: 'user', content: `Describe ${currentLocation.name} in 2-3 sentences.` }
+        ]);
+        currentLocation.imageUrl = await this.generateLocationImage(currentLocation.name, locationDescription);
+      } catch (error) {
+        console.error('Error generating location image:', error);
+      }
+    }
+
     const prompt = `You are ${currentLocation.name}. Describe ${avatar.name}'s departure to ${newLocation.name} in a brief atmospheric message.`;
     const response = await this.aiService.chat([
       { role: 'system', content: 'You are a mystical location describing travelers.' },
@@ -90,7 +108,7 @@ export class LocationService {
     return response;
   }
 
-  async findOrCreateLocation(guild, locationName) {
+  async findOrCreateLocation(guild, locationName, sourceChannel = null) {
     if (!guild) {
       throw new Error('Guild is required to find or create location');
     }
@@ -105,40 +123,33 @@ export class LocationService {
         return matches[0].item;
       }
 
-      // Create new thread in the nearest matching channel
-      const channelFuse = new Fuse(guild.channels.cache.filter(c => c.isTextBased()).map(c => ({
-        name: c.name,
-        channel: c
-      })), this.fuseOptions);
-
-      const channelMatch = channelFuse.search(locationName)[0]?.item.channel || 
-                          guild.channels.cache.find(c => c.isTextBased());
-
-      const locationsChannel = guild.channels.cache.find(c => 
-        (c.name === 'locations' && c.threads) || // Check for thread support
-        c.type === 15 || // Forum channel type
-        (c.isTextBased() && c.threads) // Any text channel with thread support
-      );
-
-      if (!locationsChannel) {
-        throw new Error('No suitable channel found for creating location');
+      // Use the source channel if provided, otherwise find/create #locations
+      let parentChannel = sourceChannel;
+      if (!parentChannel || !parentChannel.threads) {
+        parentChannel = guild.channels.cache.find(c => 
+          c.isTextBased() && c.threads
+        );
       }
 
+      if (!parentChannel) {
+        throw new Error('No suitable channel found for creating location thread');
+      }
+
+      // Generate location content
       const locationDescription = await this.aiService.chat([
         { role: 'system', content: 'Generate a brief, atmospheric description of this fantasy location.' },
         { role: 'user', content: `Describe ${locationName} in 2-3 sentences.` }
       ]);
 
-      // First generate and upload the image
       const locationImage = await this.generateLocationImage(locationName, locationDescription);
 
-      // Create the thread
-      const thread = await locationsChannel.threads.create({
+      // Create thread in the source channel
+      const thread = await parentChannel.threads.create({
         name: locationName,
         autoArchiveDuration: 60
       });
 
-      // Post image by itself first
+      // Post initial content
       await thread.send({ 
         files: [{ 
           attachment: locationImage,
@@ -146,10 +157,8 @@ export class LocationService {
         }]
       });
 
-      // Generate evocative description based on the image
       const evocativeDescription = await this.generateLocationDescription(locationName, locationImage);
 
-      // Send the description as the location
       await sendAsWebhook(
         this.client,
         thread.id,
@@ -158,7 +167,6 @@ export class LocationService {
         locationImage
       );
 
-      // Return the location data
       return {
         id: thread.id,
         name: locationName,
@@ -166,9 +174,10 @@ export class LocationService {
         description: evocativeDescription,
         imageUrl: locationImage
       };
+
     } catch (error) {
       console.error('Error in findOrCreateLocation:', error);
-      return null;
+      throw error;
     }
   }
 
@@ -207,5 +216,86 @@ export class LocationService {
     ]);
 
     return response;
+  }
+
+  async trackLocationMessage(locationId, message) {
+    if (!this.locationMessages.has(locationId)) {
+      this.locationMessages.set(locationId, { count: 0, messages: [] });
+    }
+
+    const locationData = this.locationMessages.get(locationId);
+    locationData.count++;
+    
+    // Store message data
+    locationData.messages.push({
+      author: message.author.username,
+      content: message.content,
+      timestamp: message.createdTimestamp
+    });
+
+    // Keep only recent messages
+    if (locationData.messages.length > this.MAX_STORED_MESSAGES) {
+      locationData.messages.shift();
+    }
+
+    // Check if we need to generate a summary
+    if (locationData.count >= this.SUMMARY_THRESHOLD) {
+      await this.generateLocationSummary(locationId);
+      locationData.count = 0; // Reset counter
+    }
+  }
+
+  async generateLocationSummary(locationId) {
+    try {
+      const locationData = this.locationMessages.get(locationId);
+      if (!locationData) return;
+
+      const location = await this.findLocationById(locationId);
+      if (!location) return;
+
+      const prompt = `As ${location.name}, observe the recent events and characters within your boundaries. 
+      Describe the current atmosphere, notable characters present, and significant events that have occurred.
+      Focus on the mood, interactions, and any changes in the environment.
+      Recent activity:
+      ${locationData.messages.map(m => `${m.author}: ${m.content}`).join('\n')}`;
+
+      const summary = await this.aiService.chat([
+        { role: 'system', content: 'You are a mystical location describing the events and characters within your bounds.' },
+        { role: 'user', content: prompt }
+      ]);
+
+      // Send the summary as the location
+      await sendAsWebhook(
+        this.client,
+        location.channel.id,
+        summary,
+        location.name,
+        location.imageUrl
+      );
+
+    } catch (error) {
+      console.error('Error generating location summary:', error);
+    }
+  }
+
+  async findLocationById(locationId) {
+    const guild = this.client.guilds.cache.first();
+    if (!guild) return null;
+
+    try {
+      const channel = await guild.channels.fetch(locationId);
+      if (!channel) return null;
+
+      return {
+        id: channel.id,
+        name: channel.name,
+        channel: channel,
+        description: channel.topic || '',
+        imageUrl: this.locationImages.get(channel.id)
+      };
+    } catch (error) {
+      console.error('Error finding location:', error);
+      return null;
+    }
   }
 }

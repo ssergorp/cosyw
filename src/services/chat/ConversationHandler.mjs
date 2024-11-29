@@ -18,6 +18,14 @@ export class ConversationHandler {
     // Add response cooldown tracking
     this.responseCooldowns = new Map(); // avatarId -> channelId -> timestamp
     this.RESPONSE_COOLDOWN = 5 * 1000; // 5 seconds between responses in same channel
+
+    // Add bot message handling
+    this.botMessageQueue = new Map(); // channelId -> [{avatar, message, timestamp}]
+    this.BOT_RESPONSE_INTERVAL = 30000; // Check every 30 seconds
+    this.BOT_RESPONSE_CHANCE = 0.3; // 30% chance to respond to bot messages
+    
+    // Start the bot message polling
+    setInterval(() => this.processBotMessageQueue(), this.BOT_RESPONSE_INTERVAL);
   }
 
   async checkIdleUpdate(avatars) {
@@ -165,7 +173,31 @@ Describe:
       .join('\n\n');
   }
   
-  async sendResponse(channel, avatar, wasExplicitlyMentioned = false, authorId = null) {
+  async sendResponse(channel, avatar, wasExplicitlyMentioned = false, authorId = null, isBot = false) {
+    const avatarId = avatar.id || avatar._id?.toString();
+    const channelId = channel.id;
+
+    // Check if avatar is allowed to respond in this channel
+    if (!this.avatarTracker.isAvatarInChannel(channelId, avatarId)) {
+      this.logger.debug(`${avatar.name} cannot respond in channel ${channelId} (not present)`);
+      return;
+    }
+
+    // If it's a bot message and not explicitly mentioned, add to queue
+    if (isBot && !wasExplicitlyMentioned) {
+      if (!this.botMessageQueue.has(channelId)) {
+        this.botMessageQueue.set(channelId, []);
+      }
+      
+      this.botMessageQueue.get(channelId).push({
+        channel,
+        avatar,
+        timestamp: Date.now()
+      });
+      
+      return;
+    }
+
     try {
       const avatarId = avatar.id || avatar._id?.toString();
       const channelId = channel.id;
@@ -334,7 +366,20 @@ Describe:
 
   async buildSystemPrompt(avatar) {
     const basePrompt = `You are ${avatar.name}. ${avatar.personality}`;
-    const dungeonPrompt = `\n\nAvailable commands:\n${this.dungeonService.getCommandsDescription()}\n\nYou can use these commands on a new line anywhere within your message.`;
+    const dungeonPrompt = `
+    Available commands:
+    ${this.dungeonService.getCommandsDescription()}
+    
+    You can use these commands on a new line anywhere within your message.
+  
+    Example:
+
+    *remembers the forest*
+
+    I remember the forest, the trees whispering secrets in the wind.
+
+    !move to the forest
+  `;
     
     // Add location awareness to the prompt
     const location = await this.dungeonService.getAvatarLocation(avatar.id);
@@ -368,6 +413,30 @@ Describe:
   // Add new method to check recent mentions
   isRecentlyMentioned(channelId, avatarId) {
     return this.avatarTracker.isRecentlyMentioned(channelId, avatarId);
+  }
+  
+  async processBotMessageQueue() {
+    for (const [channelId, queue] of this.botMessageQueue.entries()) {
+      if (!queue.length) continue;
+
+      // Process messages that are at least 1 minute old
+      const now = Date.now();
+      const oldMessages = queue.filter(item => now - item.timestamp >= 60000);
+      
+      for (const item of oldMessages) {
+        if (Math.random() < this.BOT_RESPONSE_CHANCE) {
+          await this.sendResponse(item.channel, item.avatar, false);
+        }
+        // Remove processed message
+        const index = queue.indexOf(item);
+        queue.splice(index, 1);
+      }
+
+      // Clean up empty queues
+      if (!queue.length) {
+        this.botMessageQueue.delete(channelId);
+      }
+    }
   }
   
 }

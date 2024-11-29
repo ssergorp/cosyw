@@ -14,6 +14,14 @@ export class MoveTool extends BaseTool {
   }
 
   async execute(message, params) {
+    // Check if bot is in this channel
+    const avatarId = message.author.id;
+    const channelId = message.channel.id;
+    
+    if (!this.dungeonService.avatarTracker?.isAvatarInChannel(channelId, avatarId)) {
+      return "You must be in this channel to move from here!";
+    }
+
     if (!message.channel.guild) {
       return "This command can only be used in a guild!";
     }
@@ -23,24 +31,36 @@ export class MoveTool extends BaseTool {
     }
 
     const avatarId = message.author.id;
-    const destination = params.join(' ');
+    let destination = params.join(' ');
+
+    // remove 'to ' from the beginning
+    if (destination.toLowerCase().startsWith('to ')) {
+      destination = destination.substring(3);
+    }
 
     try {
       const currentLocation = await this.dungeonService.getAvatarLocation(avatarId);
       const newLocation = await this.locationService.findOrCreateLocation(
         message.channel.guild, 
-        destination
+        destination,
+        message.channel
       );
 
       if (!newLocation) {
         return "Failed to find or create that location!";
       }
 
-      const avatar = await this.dungeonService.getAvatar(avatarId) || {
-        id: avatarId,
-        name: message.author.username,
-        personality: 'mysterious traveler'
-      };
+      let avatar = await this.dungeonService.getAvatar(avatarId);
+      if (!avatar) {
+        const user = await this.dungeonService.client.users.fetch(avatarId);
+        await this.dungeonService.avatarService.createAvatar({
+          id: avatarId,
+          name: user.username,
+          personality: 'mysterious traveler',
+          imageUrl: user.displayAvatarURL()
+        });
+        avatar = await this.dungeonService.getAvatar(avatarId);
+      }
 
       // Store original location if this is a mention-based move
       if (message.mentions?.has(avatarId)) {
@@ -101,7 +121,7 @@ export class MoveTool extends BaseTool {
         console.error('Error sending arrival message:', error);
       }
 
-      return `${message.author.username} moved to ${newLocation.name}!`;
+      return `${avatar.name} moved to ${newLocation.name}!`;
     } catch (error) {
       console.error('Error in MoveTool execute:', error);
       return "Failed to move: " + error.message;
