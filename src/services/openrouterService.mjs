@@ -3,7 +3,7 @@ import models from '../models.config.mjs';
 
 export class OpenRouterService {
   constructor(apiKey) {
-    this.model = process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.2-3b-instruct:free';
+    this.model = process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.2-3b-instruct';
     this.openai = new OpenAI({
       apiKey: ( apiKey || process.env.OPENROUTER_API_TOKEN),
       baseURL: 'https://openrouter.ai/api/v1',
@@ -68,7 +68,7 @@ export class OpenRouterService {
   }
 
   // Method to have a chat with OpenRouter
-  async chat(messages, options = {}) {
+  async chat(messages, options = { model: 'meta-llama/llama-3.2-1b-instruct' }) {
     try {
       const response = await this.openai.chat.completions.create({
         model: options.model || this.model,

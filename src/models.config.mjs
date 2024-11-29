@@ -62,6 +62,10 @@ const models = [
     {
       "model": "google/gemini-flash-1.5-8b",
       "rarity": "common"
+    },
+    {
+      "model": "x-ai/grok-beta",
+      "rarity": "common"
     }
   ];
 

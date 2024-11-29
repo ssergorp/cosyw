@@ -24,7 +24,7 @@ const aiService = new AIService();
 
 // Initialize Logger
 const logger = winston.createLogger({
-  level: 'info',
+  level: 'error',
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.printf(
@@ -118,6 +118,44 @@ async function saveMessageToDatabase(message) {
     logger.info('💾 Message saved to database');
   } catch (error) {
     logger.error(`Failed to save message to database: ${error.message}`);
+  }
+}
+
+async function handleBreedCommand(message, args) {
+  // find an avatar for each argument
+  const avatars = await avatarService.getAllAvatars();
+  const mentionedAvatars = extractMentionedAvatars(message.content, avatars);
+
+  // if there are two avatars mentioned, reply with their names
+  if (mentionedAvatars.size === 2) {
+    const [avatar1, avatar2] = Array.from(mentionedAvatars);
+    await replyToMessage(
+      client,
+      message.channel.id,
+      message.id,
+      `Breeding ${avatar1.name} with ${avatar2.name}...`
+    );
+
+
+      // combine the prompt, dynamicPersonality, and description of the two avatars into a message for createAvatar
+      const prompt = `Breed the following avatars, and create a new avatar:
+      AVATAR 1: ${avatar1.name} - ${avatar1.prompt}
+      ${avatar1.description}
+      ${avatar1.dynamicPersonality}
+
+      AVATAR 2: ${avatar2.name} - ${avatar2.prompt}
+      ${avatar2.description}
+      ${avatar2.dynamicPersonality}
+      `;
+
+      return await handleCreateCommand(message, [prompt]);
+  } else {
+    await replyToMessage(
+      client,
+      message.channel.id,
+      message.id,
+      'Please mention two avatars to breed.'
+    );
   }
 }
 
@@ -257,60 +295,24 @@ function extractMentionedAvatars(content, avatars) {
  */
 async function handleCommands(message, args) {
 
-  if (message.content === '!react') {
-    await reactToMessage(client, message.channel.id, message.id, '👍');
-  }
-
-  if (message.content === '!reply') {
-    await replyToMessage(client, message.channel.id, message.id, 'This is a reply!');
-  }
-
-  if (message.content === '!webhook') {
-    await sendAsWebhook(
-      client,
-      message.channel.id,
-      'Hello from the webhook!',
-      'Custom Bot'
-    ); // Added missing closing parenthesis and semicolon
-    
-    if (messages && messages.length > 0) {
-      const recentMessages = messages
-        .map((msg) => `${msg.author.username}: ${msg.content}`)
-        .join('\n');
-      await sendLongMessage(client, message.channel.id, recentMessages);
-    } else {
-      await replyToMessage(
-        client,
-        message.channel.id,
-        message.id,
-        'No recent messages found.'
-      );
-    }
-  }
-
-  if (message.content.startsWith('!long ')) {
-    const content = message.content.slice(6);
-    await sendLongMessage(client, message.channel.id, content);
-  }
-
-  if (message.content.startsWith('!thread ')) {
-    const [threadId, ...contentParts] = message.content.slice(8).split(' ');
-    const content = contentParts.join(' ');
-    await sendToThread(client, threadId, content);
-  }
-
-  if (message.content.startsWith('!summon ')) {
+  if (message.content.toLowerCase().startsWith('!summon ')) {
     const args = message.content.slice(8).split(' ');
     await reactToMessage(client, message.channel.id, message.id, '🔮');
     await handleCreateCommand(message, args);
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
-} // Added closing brace for handleOtherCommands
+
+  if (message.content.startsWith('!breed')){
+    const args = message.content.slice(6).split(' ');
+    await reactToMessage(client, message.channel.id, message.id, '🔮');
+    await handleBreedCommand(message, args);
+    await reactToMessage(client, message.channel.id, message.id, '✅');
+  }
+} 
 
 client.on('messageCreate', async (message) => {
   try {
-
-    //  process commands 
+    // Process commands 
     if (message.content.startsWith('!')) {
       const [command, ...args] = message.content.slice(1).split(' ');
       await handleCommands(message, args);
@@ -321,62 +323,67 @@ client.on('messageCreate', async (message) => {
       chatService.updateLastMessageTime();
     }
 
-    // Save all messages to database
-      await saveMessageToDatabase(message);
+    // Save message to database
+    await saveMessageToDatabase(message);
     
     // Track message for attention decay
     if (chatService) {
       chatService.markChannelActivity(message.channel.id);
     }
 
-    // Remove the old reply check code and replace with:
+    // Handle replies to avatar messages
     if (message.reference && message.reference.messageId) {
       const repliedMessageId = message.reference.messageId;
       const repliedAvatarId = chatService.attentionManager.getMessageAuthorAvatar(repliedMessageId);
       
       if (repliedAvatarId) {
+        const avatars = await avatarService.getAllAvatars();
         const repliedAvatar = avatars.find(a => (a.id || a._id?.toString()) === repliedAvatarId);
         if (repliedAvatar) {
           logger.info(`Processing reply to avatar message: ${repliedAvatar.name} (${repliedAvatarId})`);
-          chatService.handleMention(message.channel.id, repliedAvatarId);
-          await chatService.respondAsAvatar(client, message.channel, repliedAvatar, !message.author.bot);
+          chatService.attentionManager.handleMention(message.channel.id, repliedAvatarId);
+          await chatService.conversationHandler.sendResponse(message.channel, repliedAvatar, !message.author.bot);
         }
       }
     }
 
-    // Continue with regular mention handling
+    // Handle avatar mentions
     const avatars = await avatarService.getAllAvatars();
     const mentionedAvatars = extractMentionedAvatars(message.content, avatars);
 
     logger.info(`Message received: "${message.content}" - Mentioned avatars: ${Array.from(mentionedAvatars).map(a => a.name).join(', ')}`);
 
-    // Validate channel ID before proceeding
-    if (!message.channel || !message.channel.id) {
-      logger.error('Message does not have a valid channel ID:', message);
-      return;
-    }
-
-    // Handle mentions
     if (mentionedAvatars.size > 0) {
       for (const avatar of mentionedAvatars) {
+        if (message.author.bot && Math.random() > 0.3) {
+          logger.info('Skipping avatar response to bot message');
+          continue;
+        }
         const avatarId = avatar.id || avatar._id.toString();
         if (!avatarId) {
           logger.error('Invalid avatar data:', JSON.stringify(avatar, null, 2));
           continue;
         }
         logger.info(`Processing mention for avatar: ${avatar.name} (ID: ${avatarId})`);
-        chatService.handleMention(message.channel.id, avatarId);
-        await chatService.respondAsAvatar(client, message.channel, avatar, !message.author.bot);
+        // Pass the user ID who mentioned the avatar
+        chatService.attentionManager.handleMention(message.channel.id, avatarId, message.author.id);
+        await chatService.conversationHandler.sendResponse(message.channel, avatar, true);
       }
     } else {
-      // Check for recently mentioned avatars that might want to respond
+      // Check for ambient responses from avatars in channel
       const avatarsInChannel = chatService.avatarTracker.getAvatarsInChannel(message.channel.id);
       for (const avatarId of avatarsInChannel) {
         const avatar = avatars.find(a => a.id === avatarId);
         if (avatar) {
-          await chatService.respondAsAvatar(client, message.channel, avatar, false);
+          // Pass the current message author's ID
+          await chatService.conversationHandler.sendResponse(message.channel, avatar, false, message.author.id);
         }
       }
+    }
+
+    // Track message with author ID
+    if (chatService) {
+      chatService.markChannelActivity(message.channel.id, false, message.author.id);
     }
 
   } catch (error) {

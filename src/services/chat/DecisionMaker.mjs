@@ -42,11 +42,15 @@ export class DecisionMaker {
     }
 
     // get the latest few messages in the channel
-    const channelMessages = await channel.messages.fetch({ limit: 5 });
+    const channelMessages = await channel.messages.fetch({ limit: 18 });
     const lastMessage = channelMessages.first();
 
     // If last message is from a bot and mentions the avatar
     if (lastMessage?.author.bot) {
+      // if the author username is the same as the avatar name, don't respond
+      if (lastMessage.author.username.toLowerCase() === avatar.name.toLowerCase()) {
+        return false;
+      }
       const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
                               (avatar.emoji && lastMessage.content.includes(avatar.emoji));
       
@@ -68,9 +72,9 @@ export class DecisionMaker {
     const botMessagePercentage = botMessageCount / channelMessages.size;
 
     // randomly decide whether to respond based on the bot message percentage
-    const shouldRespond = !lastMessage.author.bot || Math.random() > (botMessagePercentage / 2);
+    const shouldRespond = lastMessage.author.bot ? Math.random() > botMessagePercentage: true;
     if (!shouldRespond) {
-      console.log('Bot message percentage:', botMessagePercentage /2);
+      console.log('Bot message percentage:', botMessagePercentage);
       return false;
     }
 
@@ -82,6 +86,13 @@ export class DecisionMaker {
     }
 
     try {
+      // Check for recent bot activity first
+      const recentBotActivity = await this.attentionManager.checkRecentBotActivity(channel);
+      if (recentBotActivity) {
+        this.logger.info('Recent bot activity detected, skipping response');
+        return false;  
+      }
+
       // Consider recent activity in attention decisions
       const isRecentlyActive = this.getRecentlyActiveAvatars(channel.id).includes(avatar.id);
       if (isRecentlyActive) {

@@ -4,7 +4,10 @@ import { DecisionMaker } from './DecisionMaker.mjs';
 import { MessageProcessor } from './MessageProcessor.mjs';
 import { AvatarTracker } from './AvatarTracker.mjs';
 import { BackgroundConversationManager } from './BackgroundConversationManager.mjs'; // Added import
-import { setIntervalAsync, clearIntervalAsync } from 'set-interval-async/fixed';
+import { setIntervalAsync } from 'set-interval-async/fixed';
+
+import { DungeonService } from '../dungeon/DungeonService.mjs'; // Added import
+import { DungeonProcessor } from '../dungeon/DungeonProcessor.mjs'; // Added import
 
 export class ChatService {
   constructor(client, mongoClient, { logger, avatarService, aiService }) {
@@ -13,7 +16,15 @@ export class ChatService {
 
     this.avatarTracker = new AvatarTracker(this.client, this.logger);
     this.attentionManager = new AttentionManager(logger);
-    this.conversationHandler = new ConversationHandler(client, aiService, logger, this.avatarTracker, avatarService);
+    this.dungeonService = new DungeonService(client, logger);
+    this.conversationHandler = new ConversationHandler(
+      client, 
+      aiService, 
+      logger, 
+      this.avatarTracker, 
+      avatarService,
+      this.dungeonService
+    );
     this.decisionMaker = new DecisionMaker(aiService, logger, this.attentionManager);
     this.messageProcessor = new MessageProcessor(avatarService);
 
@@ -48,11 +59,34 @@ export class ChatService {
     this.responseQueue = new Map(); // channelId -> Set of avatarIds to respond
     this.responseTimeout = null;
     this.RESPONSE_DELAY = 3000; // Wait 3 seconds before processing responses
+
+    this.dungeonProcessor = new DungeonProcessor(this.dungeonService, logger);
   }
 
   async setupWithRetry(attempt = 1) {
     try {
       await this.setup();
+      
+      // Initialize avatars in channels after setup
+      const avatars = await this.avatarService.getAllAvatars();
+      const guilds = this.client.guilds.cache.values();
+      
+      for (const guild of guilds) {
+        const channels = guild.channels.cache
+          .filter(c => c.isTextBased() && !c.isThread())
+          .values();
+          
+        for (const channel of channels) {
+          for (const avatar of avatars) {
+            // Add avatars to general channels by default
+            if (channel.name.includes('general')) {
+              const avatarId = avatar.id || avatar._id?.toString();
+              this.avatarTracker.addAvatarToChannel(channel.id, avatarId, guild.id);
+            }
+          }
+        }
+      }
+      
       this.setupComplete = true;
       this.isConnected = true;
       this.logger.info('ChatService setup completed successfully');
@@ -100,6 +134,7 @@ export class ChatService {
     try {
       await this.setupDatabase(this.mongoClient);
       await this.setupAvatarChannelsAcrossGuilds();
+      await this.dungeonService.initializeDatabase(); // Add this line
       this.setupReflectionInterval();
       this.setupHealthCheck();
       this.logger.info('ChatService setup completed');
@@ -135,6 +170,8 @@ export class ChatService {
     for (const channel of channels) {
       await this.processChannel(channel, validAvatars);
     }
+
+    await this.dungeonProcessor.checkPendingActions();
   }
 
   async respondAsAvatar(client, channel, avatar, force = false) {
@@ -185,7 +222,11 @@ export class ChatService {
       const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
       this.logger.info(`🎯 Forcing startup reflection for ${randomAvatar.name}`);
       await this.generateReflection(randomAvatar);
-      await this.conversationHandler.generateNarrative(randomAvatar, { type: 'inner_monologue' });
+      const channelIds = this.avatarTracker.getAvatarChannels(randomAvatar.id);
+      await this.conversationHandler.generateNarrative(
+        randomAvatar,
+        { channelIds, type: 'inner_monologue',  }
+      );
     }
 
     this.logger.info('✅ ChatService started.');
@@ -354,35 +395,45 @@ export class ChatService {
     }
   }
 
-  markChannelActivity(channelId, mentionsAvatar = false) {
+  markChannelActivity(channelId, mentionsAvatar = false, authorId = null) {
     // Track message count for attention decay
     this.attentionManager.trackMessage(channelId);
     
     // Get recently active avatars and increase their attention
     const recentlyActive = this.decisionMaker.getRecentlyActiveAvatars(channelId);
     for (const avatarId of recentlyActive) {
-      const increase = 0.15; // Smaller increase for non-mentioned avatars
-      this.attentionManager.increaseAttention(channelId, avatarId, increase);
-      this.logger.info(`Increasing attention for recently active avatar ${avatarId} in ${channelId}`);
+      this.attentionManager.increaseAttention(channelId, avatarId, 0.15);
     }
 
-    // Also handle avatars in channel as before
+    // Handle avatars in channel (remove duplicate loop)
     const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(channelId);
     for (const avatarId of avatarsInChannel) {
       const increase = mentionsAvatar ? 0.4 : 0.1;
       this.attentionManager.increaseAttention(channelId, avatarId, increase);
-      this.logger.info(`${avatarId} now paying more attention to ${channelId}`);
     }
-
-    for (const avatarId of avatarsInChannel) {
-      const increase = mentionsAvatar ? 0.4 : 0.1;
-      this.attentionManager.increaseAttention(channelId, avatarId, increase);
-    }
-    return;
   }
-
 
   handleMention(channelId, avatarId) {
     this.attentionManager.handleMention(channelId, avatarId);
+  }
+
+  shouldRespond(channelId, avatarId, force = false) {
+    try {
+      if (force) return true;
+
+      const attention = this.avatarTracker.getAttention(channelId, avatarId);
+      const currentLevel = this.avatarTracker.decayAttention(channelId, avatarId);
+      
+      // Implement probabilistic response based on attention level
+      const responseChance = Math.min(0.8, 0.1 + (currentLevel * 0.1));
+      const shouldRespond = Math.random() < responseChance;
+
+      this.logger.debug(`Avatar ${avatarId} attention level: ${currentLevel}, response chance: ${responseChance}`);
+      return shouldRespond;
+
+    } catch (error) {
+      this.logger.error(`Error in shouldRespond: ${error.message}`);
+      return false;
+    }
   }
 }

@@ -131,10 +131,19 @@ function AvatarDetailModal({ avatar, onClose }) {
 }
 
 function AvatarCard({ avatar, onSelect }) {
+  const renderLives = () => {
+    if (avatar.status === 'dead') {
+      return <span className="text-red-500">☠️ Dead</span>;
+    }
+    return Array(avatar.lives || 0).fill('❣️').join('');
+  };
+
   return (
     <div 
       onClick={() => onSelect(avatar)}
-      className="bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-700 transition-colors"
+      className={`bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-700 transition-colors ${
+        avatar.status === 'dead' ? 'opacity-50' : ''
+      }`}
     >
       <div className="flex items-center space-x-4">
         <img 
@@ -148,11 +157,91 @@ function AvatarCard({ avatar, onSelect }) {
             <TierBadge tier={avatar.tier} />
           </div>
           <p className="text-gray-400">Messages: {avatar.messageCount}</p>
+          <p className="text-gray-400">{renderLives()}</p>
           <p className="text-sm text-gray-500">
             Active: {new Date(avatar.lastMessage).toLocaleDateString()}
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CombatLog() {
+  const [combatLog, setCombatLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchCombatLog = async () => {
+      try {
+        const response = await fetch('/api/dungeon/log');
+        const data = await response.json();
+        setCombatLog(data);
+      } catch (error) {
+        console.error('Error fetching combat log:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCombatLog();
+    const interval = setInterval(fetchCombatLog, 5000); // Refresh every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="text-center py-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {combatLog.map((entry, index) => (
+        <div key={index} className="bg-gray-800 rounded-lg p-4">
+          <div className="flex justify-between items-center">
+            <span className="text-lg">{entry.result}</span>
+            <span className="text-sm text-gray-400">
+              {new Date(entry.timestamp).toLocaleTimeString()}
+            </span>
+          </div>
+          <div className="text-sm text-gray-500">
+            Location: #{entry.channelId}
+          </div>
+        </div>
+      ))}
+      {combatLog.length === 0 && (
+        <div className="text-center text-gray-500">No combat actions yet</div>
+      )}
+    </div>
+  );
+}
+
+function ViewToggle({ currentView, onViewChange }) {
+  return (
+    <div className="flex justify-center gap-4 mb-8">
+      <button
+        className={`px-4 py-2 rounded ${
+          currentView === 'leaderboard' 
+            ? 'bg-blue-600 text-white' 
+            : 'bg-gray-700 text-gray-300'
+        }`}
+        onClick={() => onViewChange('leaderboard')}
+      >
+        Leaderboard
+      </button>
+      <button
+        className={`px-4 py-2 rounded ${
+          currentView === 'combat' 
+            ? 'bg-red-600 text-white' 
+            : 'bg-gray-700 text-gray-300'
+        }`}
+        onClick={() => onViewChange('combat')}
+      >
+        Combat Log
+      </button>
     </div>
   );
 }
@@ -165,6 +254,7 @@ function App() {
   const [lastMessageCount, setLastMessageCount] = useState(null);
   const [lastId, setLastId] = useState(null);
   const [selectedTier, setSelectedTier] = useState('All');
+  const [currentView, setCurrentView] = useState('leaderboard');
   
   const loadAvatars = async (isInitial = false) => {
     if (loading || (!hasMore && !isInitial)) return;
@@ -231,29 +321,37 @@ function App() {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-4xl font-bold mb-8 text-center">Avatar Leaderboard</h1>
-      <TierFilter 
-        selectedTier={selectedTier} 
-        onTierChange={tier => setSelectedTier(tier)} 
-      />
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {avatars.map(avatar => (
-          <AvatarCard 
-            key={avatar._id} 
-            avatar={avatar} 
-            onSelect={setSelectedAvatar}
+      <h1 className="text-4xl font-bold mb-8 text-center">Avatar Dashboard</h1>
+      <ViewToggle currentView={currentView} onViewChange={setCurrentView} />
+      
+      {currentView === 'leaderboard' ? (
+        <>
+          <TierFilter 
+            selectedTier={selectedTier} 
+            onTierChange={tier => setSelectedTier(tier)} 
           />
-        ))}
-      </div>
-      {loading && (
-        <div className="text-center py-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
-        </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {avatars.map(avatar => (
+              <AvatarCard 
+                key={avatar._id} 
+                avatar={avatar} 
+                onSelect={setSelectedAvatar}
+              />
+            ))}
+          </div>
+          {loading && (
+            <div className="text-center py-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+            </div>
+          )}
+          <AvatarDetailModal 
+            avatar={selectedAvatar} 
+            onClose={() => setSelectedAvatar(null)} 
+          />
+        </>
+      ) : (
+        <CombatLog />
       )}
-      <AvatarDetailModal 
-        avatar={selectedAvatar} 
-        onClose={() => setSelectedAvatar(null)} 
-      />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { sendAsWebhook } from '../discordService.mjs';
 import { MongoClient } from 'mongodb';
 
 export class ConversationHandler {
-  constructor(client, aiService, logger, avatarTracker, avatarService) {
+  constructor(client, aiService, logger, avatarTracker, avatarService, dungeonService) {
     this.client = client;
     this.aiService = aiService;
     this.logger = logger;
@@ -13,6 +13,7 @@ export class ConversationHandler {
     this.lastUpdate = Date.now();
     this.avatarTracker = avatarTracker;
     this.avatarService = avatarService;
+    this.dungeonService = dungeonService;
 
     // Add response cooldown tracking
     this.responseCooldowns = new Map(); // avatarId -> channelId -> timestamp
@@ -47,7 +48,7 @@ export class ConversationHandler {
       }
 
       if (!avatar.model) {
-        this.aiService.selectRandomModel();
+        avatar.model = await this.aiService.selectRandomModel();
         await this.avatarService.updateAvatar(avatar);
       }
       const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
@@ -76,10 +77,10 @@ export class ConversationHandler {
     if (crossGuild) {
       return `${basePrompt}
 
-Based on interactions across communities, describe:
-1. Patterns and themes noticed
-2. Connections made
-3. Current thoughts and feelings.`;
+Describe your most recent dream, then based on the information above, describe any:
+1. Significant moments and relationships.
+2. Connections made mention special users or loacations.
+3. Current thoughts, feelings, goals.`;
     }
 
     return `${basePrompt}
@@ -164,10 +165,25 @@ Describe:
       .join('\n\n');
   }
   
-  async sendResponse(channel, avatar) {
+  async sendResponse(channel, avatar, wasExplicitlyMentioned = false, authorId = null) {
     try {
       const avatarId = avatar.id || avatar._id?.toString();
       const channelId = channel.id;
+
+      // Add avatar to channel if not already tracked
+      if (!this.avatarTracker.isAvatarInChannel(channelId, avatarId)) {
+        this.avatarTracker.addAvatarToChannel(channelId, avatarId, channel.guild.id);
+      }
+
+      // Check if avatar should respond
+      const shouldAutoRespond = this.avatarTracker.shouldAutoRespond(channelId, avatarId, authorId);
+      const isRecentlyMentioned = this.avatarTracker.isRecentlyMentioned(channelId, avatarId);
+
+      // If not explicitly mentioned and no auto-response conditions met, skip
+      if (!wasExplicitlyMentioned && !shouldAutoRespond && !isRecentlyMentioned) {
+        this.logger.debug(`${avatar.name} decided not to respond (no recent mention/interaction)`);
+        return;
+      }
 
       // Check response cooldown
       const lastResponse = this.getLastResponseTime(avatarId, channelId);
@@ -201,25 +217,85 @@ Describe:
       }
 
       // Generate response using AI service
-      const response = await this.aiService.chat([
+      let response = await this.aiService.chat([
         {
           role: 'system',
-          content: `You are ${avatar.name}. ${avatar.personality}\n\nYour last reflection: ${context.lastReflection}`
+          content: `You are ${avatar.name}. ${avatar.personality}
+          Your last reflection: ${context.lastReflection}
+          
+          ${await this.buildSystemPrompt(avatar)}
+          `
         },
         {
           role: 'user',
           content: `Channel: #${context.channelName} in ${context.guildName}\n\nRecent messages:\n${
             context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
-          }\n\nSend a message to the chat as ${avatar.name}, advancing your goals and keeping the chat interesting. Keep your responses in character and SHORT (no more than two or three sentences and *actions*).`
+          }\n\nYou are ${avatar.name}. Respond humorously to the chat advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
         }
       ], {
+        max_tokens: 256,
         model: avatar.model
       });
 
-      // Send response through webhook and get the message object back
-      const sentMessage = await sendAsWebhook(this.client, channelId, response, avatar.name, avatar.imageUrl);
+      // if the response starts with the avatar name, remove it
+      if (response.startsWith(avatar.name + ':')) {
+        response = response.replace(avatar.name + ':', '').trim();
+      }
+
+      // Extract and process tool commands using dungeonService
+      const { commands, cleanText, commandLines } = this.dungeonService.extractToolCommands(response);
       
-      // Track the sent message
+      let sentMessage;
+      let commandResults = [];
+
+      // Process commands first if any
+      if (commands.length > 0) {
+        this.logger.info(`Processing ${commands.length} commands for ${avatar.name}`);
+        // Execute each command and collect results
+        commandResults = await Promise.all(
+          commands.map(cmd => 
+            this.dungeonService.processAction(
+              { channel, author: { id: avatarId, username: avatar.name }, content: response },
+              cmd.command,
+              cmd.params
+            )
+          )
+        );
+
+        
+          sentMessage = await sendAsWebhook(
+            this.client,
+            channel.id,
+            commandResults.join('\n'),
+            avatar.name + ' 🛠️',
+            avatar.imageUrl
+          );
+      }
+
+      // Send the main response if there's clean text
+      if (!commands.length || cleanText.trim()) {
+        sentMessage = await sendAsWebhook(
+          this.client,
+          channel.id,
+          commands.length ? cleanText : response,
+          avatar.name,
+          avatar.imageUrl
+        );
+      }
+
+      // Send command results if any
+      const validResults = commandResults.filter(r => r);
+      if (validResults.length > 0) {
+        sentMessage = await sendAsWebhook(
+          this.client,
+          channel.id,
+          validResults.join('\n'),
+          avatar.name,
+          avatar.imageUrl
+        );
+      }
+
+      // Track the sent message if we have a valid message and tracker
       if (sentMessage && this.avatarTracker) {
         this.avatarTracker.trackAvatarMessage(sentMessage.id, avatarId);
       }
@@ -235,6 +311,16 @@ Describe:
     }
   }
 
+  async handleMessage(message, avatarId, wasExplicitlyMentioned = false) {
+    if (wasExplicitlyMentioned) {
+      // Handle mention with maximum attention
+      this.avatarTracker.handleMention(message.channel.id, avatarId);
+    } else {
+      // Track message for attention decay and mention memory
+      this.avatarTracker.trackChannelMessage(message.channel.id);
+    }
+  }
+
   getLastResponseTime(avatarId, channelId) {
     return this.responseCooldowns.get(avatarId)?.get(channelId);
   }
@@ -244,6 +330,44 @@ Describe:
       this.responseCooldowns.set(avatarId, new Map());
     }
     this.responseCooldowns.get(avatarId).set(channelId, Date.now());
+  }
+
+  async buildSystemPrompt(avatar) {
+    const basePrompt = `You are ${avatar.name}. ${avatar.personality}`;
+    const dungeonPrompt = `\n\nAvailable commands:\n${this.dungeonService.getCommandsDescription()}\n\nYou can use these commands on a new line anywhere within your message.`;
+    
+    // Add location awareness to the prompt
+    const location = await this.dungeonService.getAvatarLocation(avatar.id);
+    const locationPrompt = location ? 
+      `\n\nYou are currently in ${location.name}. ${location.description}` : 
+      '\n\nYou are wandering between locations.';
+
+    const movementPrompt = `\nYou can move to new locations using the !move command.`;
+    
+    return basePrompt + locationPrompt + movementPrompt + dungeonPrompt;
+  }
+
+  extractCombatCommands(text) {
+    const commands = [];
+    const lines = text.split('\n');
+    
+    for (const line of lines) {
+      // Check for natural language combat phrases
+      if (line.toLowerCase().includes('attack')) {
+        const match = line.match(/(?:attack|strikes|hits) (\w+)/i);
+        if (match) {
+          commands.push({ command: 'attack', params: [match[1]] });
+        }
+      }
+      // Add more command patterns as needed
+    }
+    
+    return commands;
+  }
+  
+  // Add new method to check recent mentions
+  isRecentlyMentioned(channelId, avatarId) {
+    return this.avatarTracker.isRecentlyMentioned(channelId, avatarId);
   }
   
 }

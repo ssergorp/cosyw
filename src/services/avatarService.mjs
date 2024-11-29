@@ -84,15 +84,21 @@ export class AvatarGenerationService {
     }
   }
 
-  async getAllAvatars() {
+  async getAllAvatars(includeStatus = 'alive') {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
-      const avatars = await collection.find({
+      const query = {
         name: { $exists: true },
         name: { $ne: null },
-      }).toArray();
+      };
+
+      // Only include alive avatars by default
+      if (includeStatus === 'alive') {
+        query.status = { $ne: 'dead' };
+      }
+
+      const avatars = await collection.find(query).toArray();
       
-      // Assign 'id' from '_id' if 'id' is missing
       return avatars.map(avatar => ({
         ...avatar,
         id: avatar.id || avatar._id.toString(),
@@ -116,6 +122,19 @@ export class AvatarGenerationService {
     }
   }
 
+  async getAvatarById(id) {
+    try {
+      const collection = this.db.collection(this.AVATARS_COLLECTION);
+      const avatar = await collection.findOne({ id: id });
+      if (!avatar) {
+        throw new Error(`Avatar with ID "${id}" not found.`);
+      }
+      return avatar;
+    } catch (error) {
+      this.logger.error(`Error fetching avatar: ${error.message}`);
+      return null;
+    }
+  }
   async getAvatar(name) {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
@@ -275,7 +294,7 @@ export class AvatarGenerationService {
       "immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f",
       {
         input: {
-          prompt: `MRQ ${prompt} neon watercolor MRQ`,
+          prompt: `MRQ ${prompt} holographic black neon MRQ`,
           model: "dev",
           lora_scale: 1,
           num_outputs: 1,
@@ -285,7 +304,8 @@ export class AvatarGenerationService {
           output_quality: 90,
           prompt_strength: 0.8,
           extra_lora_scale: 1,
-          num_inference_steps: 28
+          num_inference_steps: 28,
+          disable_safety_checker: true,
         }
       }
     );
@@ -451,6 +471,8 @@ export class AvatarGenerationService {
         imageUrl: s3url,
         channelId: data.channelId,
         createdAt: new Date(),
+        lives: 3,
+        status: 'alive',
       };
 
       // Check for Arweave prompt before generating
