@@ -47,26 +47,29 @@ export class MessageHandler {
       // Get recent messages directly from database
       const messages = await this.chatService.getRecentMessages(channelId);
       const topMentions = await this.chatService.getTopMentions(messages, avatarsInChannel);
-      
-      for (const [avatarId, count] of topMentions) {
-        // Skip if already processing this avatar for this channel
-        const processingKey = `${channelId}-${avatarId}`;
-        if (this.processingMessages.has(processingKey)) {
-          this.logger.debug(`Skipping already processing response: ${processingKey}`);
-          continue;
-        }
 
-        try {
-          this.processingMessages.add(processingKey);
-          const avatar = await this.avatarService.getAvatarById(avatarId);
-          if (avatar) {
-            const channel = await this.chatService.client.channels.fetch(channelId);
-            await this.chatService.conversationHandler.sendResponse(channel, avatar, count > 1);
-          }
-        } finally {
-          this.processingMessages.delete(processingKey);
-        }
+      // shuffle the avatars
+      topMentions.sort(() => Math.random() - 0.5);
+
+      const [avatarId, count] = topMentions[0];
+      // Skip if already processing this avatar for this channel
+      const processingKey = `${channelId}-${avatarId}`;
+      if (this.processingMessages.has(processingKey)) {
+        this.logger.debug(`Skipping already processing response: ${processingKey}`);
+        return;
       }
+
+      try {
+        this.processingMessages.add(processingKey);
+        const avatar = await this.avatarService.getAvatarById(avatarId);
+        if (avatar) {
+          const channel = await this.chatService.client.channels.fetch(channelId);
+          await this.chatService.conversationHandler.sendResponse(channel, avatar, count > 1);
+        }
+      } finally {
+        this.processingMessages.delete(processingKey);
+      }
+
     } catch (error) {
       this.logger.error(`Error processing channel ${channelId}:`, error);
     }
@@ -81,7 +84,7 @@ export class MessageHandler {
 
   extractMentionsWithCount(content, avatars) {
     const mentionCounts = new Map();
-     content = content.toLowerCase();
+    content = content.toLowerCase();
 
     for (const avatar of avatars) {
       try {
