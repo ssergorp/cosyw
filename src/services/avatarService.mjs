@@ -60,15 +60,26 @@ export class AvatarGenerationService {
   /**
    * Connects the service to the MongoDB database.
    */
-  async connectToDatabase() {
+  async connectToDatabase(db) {
     try {
-      await this.mongoClient.connect();
-      this.db = this.mongoClient.db(this.DB_NAME);
+      this.db = db;
       this.avatarsCollection = this.db.collection(this.AVATARS_COLLECTION);
       this.logger.info('AvatarGenerationService connected to the MongoDB database.');
     } catch (error) {
       this.logger.error(`Failed to connect to MongoDB: ${error.message}`);
       throw error; // Re-throw to handle it in the calling function
+    }
+  }
+
+  async getAvatars(avatarIds) {
+    try {
+      const avatars = await this.avatarsCollection.find({
+        _id: { $in: avatarIds.map(id => ObjectId.createFromHexString(id)) }
+      }).toArray();
+      return avatars;
+    } catch (error) {
+      this.logger.error(`Failed to fetch avatars: ${error.message}`);
+      return [];
     }
   }
 
@@ -122,10 +133,11 @@ export class AvatarGenerationService {
     }
   }
 
+
   async getAvatarById(id) {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
-      const avatar = await collection.findOne({ id: id });
+      const avatar = await collection.findOne({ _id: id });
       if (!avatar) {
         throw new Error(`Avatar with ID "${id}" not found.`);
       }

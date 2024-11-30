@@ -219,6 +219,11 @@ export class LocationService {
   }
 
   async trackLocationMessage(locationId, message) {
+    if (!locationId || !message) {
+      this.logger?.warn('Invalid parameters for trackLocationMessage');
+      return;
+    }
+
     if (!this.locationMessages.has(locationId)) {
       this.locationMessages.set(locationId, { count: 0, messages: [] });
     }

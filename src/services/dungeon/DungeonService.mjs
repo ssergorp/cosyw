@@ -1,22 +1,20 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { DungeonLog } from './DungeonLog.mjs';
 import { AttackTool } from './tools/AttackTool.mjs';
 import { DefendTool } from './tools/DefendTool.mjs';
 import { MoveTool } from './tools/MoveTool.mjs';
 import { CreationTool } from './tools/CreationTool.mjs';
 import { OpenRouterService } from '../openrouterService.mjs';
-import { AvatarManager } from './AvatarManager.mjs';
-import { AttentionManager } from '../chat/AttentionManager.mjs';
 
 export class DungeonService {
-  constructor(client, logger) {
+  constructor(client, logger, avatarTracker = null) {
     this.client = client;
     this.logger = logger;
+    this.avatarTracker = avatarTracker; // Store the avatarTracker
     this.locations = new Map(); // locationId -> {areas: Map<threadId, areaData>}
     this.avatarPositions = new Map(); // avatarId -> {locationId, areaId}
     this.avatarStats = new Map(); // avatarId -> {hp, attack, defense}
     this.dungeonLog = new DungeonLog(logger);
-    this.avatarService = new AvatarManager(logger); // Initialize AvatarService directly
     this.tools = new Map();
     this.registerTools();
     this.aiService = new OpenRouterService(); // Add AIService initialization
@@ -26,17 +24,10 @@ export class DungeonService {
       attack: 10,
       defense: 5
     };
-    this.attentionManager = new AttentionManager(logger);
 
     // Listen for avatar movements to update attention
     this.client.on('avatarMoved', ({ avatarId, newChannelId, temporary }) => {
-      if (temporary) {
-        // Set high but not maximum attention for temporary moves
-        this.attentionManager.setAttention(newChannelId, avatarId, 0.8);
-      } else {
-        // Set maximum attention for deliberate moves
-        this.attentionManager.setAttention(newChannelId, avatarId, 1.0);
-      }
+      console.log(`Avatar ${avatarId} moved to ${newChannelId}`);
     });
   }
 
@@ -80,9 +71,8 @@ export class DungeonService {
     };
   }
 
-  setAvatarService(avatarService) {
-    // Allow override of default avatar service
-    this.avatarService = avatarService || this.avatarService;
+  setAvatarTracker(avatarTracker) {
+    this.avatarTracker = avatarTracker;
   }
 
   async initializeDatabase() {
@@ -231,11 +221,26 @@ export class DungeonService {
     try {
       await client.connect();
       const db = client.db('discord');
+      
+      // Update position
       await db.collection('dungeon_positions').updateOne(
         { avatarId },
-        { $set: { locationId: newLocationId } },
+        { 
+          $set: { 
+            locationId: newLocationId,
+            lastUpdated: new Date()
+          }
+        },
         { upsert: true }
       );
+
+      // Emit event for tracking
+      this.client.emit('avatarMoved', {
+        avatarId,
+        newLocationId,
+        temporary: false
+      });
+
     } finally {
       await client.close();
     }
@@ -257,16 +262,10 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
-      
-      // First try AvatarManager
-      const avatarFromManager = await this.avatarService?.getAvatar(avatarId);
-      if (avatarFromManager) {
-        return avatarFromManager;
-      }
+      const db = client.db(process.env.MONGO_DB_NAME);
 
       // If not found, try direct database lookup
-      const avatar = await db.collection('avatars').findOne({ id: avatarId });
+      const avatar = await db.collection('avatars').findOne({ _id: ObjectId.createFromHexString(avatarId) });
       if (avatar) {
         return avatar;
       }
@@ -295,8 +294,12 @@ export class DungeonService {
     }
   }
 
-  async initializeAvatar(avatarId) {
+  // Update to accept locationId parameter
+  async initializeAvatar(avatarId, locationId) {
     await this.updateAvatarStats(avatarId, this.defaultStats);
+    if (locationId) {
+      await this.updateAvatarPosition(avatarId, locationId);
+    }
     return this.defaultStats;
   }
 }

@@ -1,4 +1,4 @@
-import { AttentionManager } from './AttentionManager.mjs';
+
 import { ConversationHandler } from './ConversationHandler.mjs';
 import { DecisionMaker } from './DecisionMaker.mjs';
 import { MessageProcessor } from './MessageProcessor.mjs';
@@ -8,34 +8,46 @@ import { setIntervalAsync } from 'set-interval-async/fixed';
 
 import { DungeonService } from '../dungeon/DungeonService.mjs'; // Added import
 import { DungeonProcessor } from '../dungeon/DungeonProcessor.mjs'; // Added import
+import { getRecentMessages } from '../discordService.mjs';
 
 export class ChatService {
-  constructor(client, mongoClient, { logger, avatarService, aiService }) {
-    this.client = client;
-    this.logger = logger;
+  constructor(client, db, options = {}) {
+    this.db = db;
+    if (!client) {
+      throw new Error('Discord client is required');
+    }
 
-    this.avatarTracker = new AvatarTracker(this.client, this.logger);
-    this.attentionManager = new AttentionManager(logger);
-    this.dungeonService = new DungeonService(client, logger);
+    this.client = client;
+    // Ensure logger exists, create no-op logger if not provided
+    this.logger = options.logger || {
+      info: () => {},
+      error: () => {},
+      warn: () => {},
+      debug: () => {}
+    };
+
+    // Initialize core services with logger
+    this.avatarTracker = new AvatarTracker(this.client, this.logger, this.db);
+    this.dungeonService = new DungeonService(client, this.logger, this.avatarTracker);
     this.conversationHandler = new ConversationHandler(
       client, 
-      aiService, 
-      logger, 
+      options.aiService, 
+      this.logger, 
       this.avatarTracker, 
-      avatarService,
+      options.avatarService,
       this.dungeonService
     );
-    this.decisionMaker = new DecisionMaker(aiService, logger, this.attentionManager);
-    this.messageProcessor = new MessageProcessor(avatarService);
+    this.decisionMaker = new DecisionMaker(options.aiService, this.logger);
+    this.messageProcessor = new MessageProcessor(options.avatarService);
 
-    this.mongoClient = mongoClient;
     this.retryAttempts = 3;
     this.retryDelay = 5000; // 5 seconds
+
+    // Track initialization state
+    this.setupComplete = false;
     this.isConnected = false;
 
-    this.setupComplete = false;
-
-    this.backgroundManager = new BackgroundConversationManager(logger);
+    this.backgroundManager = new BackgroundConversationManager(this.logger);
     this.BACKGROUND_CHECK_INTERVAL = 5 * 60000; // Check every minute
     this.backgroundInterval = null;
 
@@ -53,18 +65,29 @@ export class ChatService {
     // Bind the method to this instance
     this.updateLastMessageTime = this.updateLastMessageTime.bind(this);
 
-    this.avatarService = avatarService; // Add this line - it was missing
-    this.aiService = aiService; // Add this line - it was missing
+    // Store services from options
+    this.avatarService = options.avatarService;
+    this.aiService = options.aiService;
+    
+    if (!this.avatarService || !this.aiService) {
+      throw new Error('avatarService and aiService are required');
+    }
 
     this.responseQueue = new Map(); // channelId -> Set of avatarIds to respond
     this.responseTimeout = null;
     this.RESPONSE_DELAY = 3000; // Wait 3 seconds before processing responses
 
-    this.dungeonProcessor = new DungeonProcessor(this.dungeonService, logger);
+    this.dungeonProcessor = new DungeonProcessor(this.dungeonService, this.logger);
+
+    // Remove complex tracking properties
+    this.AMBIENT_CHECK_INTERVAL = 60000; // Check for ambient responses every minute
+    this.setupAmbientResponses();
   }
 
   async setupWithRetry(attempt = 1) {
+
     try {
+      this.logger.info(`Attempting setup (attempt ${attempt})`);
       await this.setup();
       
       // Initialize avatars in channels after setup
@@ -81,7 +104,7 @@ export class ChatService {
             // Add avatars to general channels by default
             if (channel.name.includes('general')) {
               const avatarId = avatar.id || avatar._id?.toString();
-              this.avatarTracker.addAvatarToChannel(channel.id, avatarId, guild.id);
+              this.avatarTracker.addAvatarToChannel(avatarId, channel.id,  guild.id);
             }
           }
         }
@@ -94,22 +117,18 @@ export class ChatService {
       this.logger.error(`Setup attempt ${attempt} failed: ${error.message}`);
       if (attempt < this.retryAttempts) {
         this.logger.info(`Retrying setup in ${this.retryDelay}ms...`);
-        setTimeout(() => this.setupWithRetry(attempt + 1), this.retryDelay);
-      } else {
-        this.logger.error('Max retry attempts reached. ChatService initialization failed.');
-        throw error;
+        return new Promise(resolve => {
+          setTimeout(() => this.setupWithRetry(attempt + 1).then(resolve), this.retryDelay);
+        });
       }
+      throw new Error('ChatService initialization failed after max retries');
     }
   }
 
-  async setupDatabase(mongoClient) {
+  async setupDatabase() {
     try {
-      // Verify database connection
-      await mongoClient.db().admin().ping();
-      this.logger.info('Database connection verified');
-
       // Get database reference
-      const db = mongoClient.db();
+      const db = this.db;
 
       // Initialize collections if needed
       this.avatarsCollection = db.collection('avatars');
@@ -132,28 +151,14 @@ export class ChatService {
 
   async setup() {
     try {
-      await this.setupDatabase(this.mongoClient);
       await this.setupAvatarChannelsAcrossGuilds();
       await this.dungeonService.initializeDatabase(); // Add this line
       this.setupReflectionInterval();
-      this.setupHealthCheck();
       this.logger.info('ChatService setup completed');
     } catch (error) {
       this.logger.error('Setup failed:', error);
       throw error;
     }
-  }
-
-  setupHealthCheck() {
-    setInterval(async () => {
-      try {
-        await this.mongoClient.db().admin().ping();
-      } catch (error) {
-        this.logger.error('Database connection lost, attempting reconnect...');
-        this.isConnected = false;
-        this.setupWithRetry();
-      }
-    }, 30000); // Check every 30 seconds
   }
 
   // Core service methods
@@ -174,6 +179,21 @@ export class ChatService {
     await this.dungeonProcessor.checkPendingActions();
   }
 
+  async getRecentMessages(channelId) {
+    try {
+      const messages = await this.db.collection('messages')
+        .find({ channelId })
+        .sort({ timestamp: -1 })
+        .limit(20)
+        .toArray();
+
+      return messages.reverse();
+    } catch (error) {
+      this.logger.error(`Failed to fetch recent messages for channel ${channelId}:`, error);
+      return [];
+    }
+  }
+
   async respondAsAvatar(client, channel, avatar, force = false) {
     // Validate channel and avatar
     if (!channel?.id || !avatar?.id) {
@@ -186,8 +206,7 @@ export class ChatService {
       
       // Always track that the avatar exists in this channel
       if (!this.avatarTracker.isAvatarInChannel(channel.id, avatar.id)) {
-        this.avatarTracker.addAvatarToChannel(channel.id, avatar.id, channel.guild.id);
-        this.attentionManager.increaseAttention(channel.id, avatar.id, 1);
+        this.avatarTracker.addAvatarToChannel(avatar.id, channel.id, channel.guild.id);
       }
 
       // Check if response is allowed based on cooldowns/decisions
@@ -208,31 +227,36 @@ export class ChatService {
   }
 
   async start() {
-    if (!this.setupComplete) {
-      await this.setupWithRetry();
-    }
+    try {
+      if (!this.setupComplete) {
+        await this.setupWithRetry();
+      }
 
-    if (!this.isConnected) {
-      throw new Error('ChatService not properly initialized');
-    }
+      if (!this.isConnected) {
+        throw new Error('ChatService not properly initialized');
+      }
 
-    // Force a random reflection on startup
-    const avatars = await this.messageProcessor.getActiveAvatars();
-    if (avatars.length > 0) {
-      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
-      this.logger.info(`🎯 Forcing startup reflection for ${randomAvatar.name}`);
-      await this.generateReflection(randomAvatar);
-      const channelIds = this.avatarTracker.getAvatarChannels(randomAvatar.id);
-      await this.conversationHandler.generateNarrative(
-        randomAvatar,
-        { channelIds, type: 'inner_monologue',  }
-      );
-    }
+      // Force a random reflection on startup
+      const avatars = await this.messageProcessor.getActiveAvatars();
+      if (avatars.length > 0) {
+        const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+        this.logger.info(`🎯 Forcing startup reflection for ${randomAvatar.name}`);
+        await this.generateReflection(randomAvatar);
+        const channelIds = this.avatarTracker.getAvatarChannels(randomAvatar.id);
+        await this.conversationHandler.generateNarrative(
+          randomAvatar,
+          { channelIds, type: 'inner_monologue',  }
+        );
+      }
 
-    this.logger.info('✅ ChatService started.');
-    this.interval = setIntervalAsync(() => this.checkMessages(), this.AMBIENT_CHAT_INTERVAL);
-    this.backgroundInterval = setIntervalAsync(() => this.updateBackgroundConversations(), this.BACKGROUND_CHECK_INTERVAL);
-    this.idleCheckInterval = setInterval(() => this.checkForIdleChannels(), 5000);
+      this.logger.info('✅ ChatService started.');
+      this.interval = setIntervalAsync(() => this.checkMessages(), this.AMBIENT_CHAT_INTERVAL);
+      this.backgroundInterval = setIntervalAsync(() => this.updateBackgroundConversations(), this.BACKGROUND_CHECK_INTERVAL);
+      this.idleCheckInterval = setInterval(() => this.checkForIdleChannels(), 5000);
+    } catch (error) {
+      this.logger.error(`Failed to start ChatService: ${error.message}`);
+      throw error;
+    }
   }
 
   async triggerStartupReflection() {
@@ -250,26 +274,11 @@ export class ChatService {
 
   async stop() {
     this.logger.info('Stopping ChatService...');
-    clearInterval(this.healthCheckInterval);
-
-    if (this.backgroundInterval) {
-      clearInterval(this.backgroundInterval);
-    }
-
-    if (this.interval) {
-      clearInterval(this.interval);
-    }
-
-    if (this.idleCheckInterval) {
-      clearInterval(this.idleCheckInterval);
-    }
-
-    try {
-      await this.mongoClient.close(true);
-      this.logger.info('Database connection closed');
-    } catch (error) {
-      this.logger.error(`Error closing database connection: ${error.message}`);
-    }
+    
+    // Clear intervals first
+    if (this.backgroundInterval) clearInterval(this.backgroundInterval);
+    if (this.interval) clearInterval(this.interval);
+    if (this.idleCheckInterval) clearInterval(this.idleCheckInterval);
 
     this.isConnected = false;
   }
@@ -395,28 +404,6 @@ export class ChatService {
     }
   }
 
-  markChannelActivity(channelId, mentionsAvatar = false, authorId = null) {
-    // Track message count for attention decay
-    this.attentionManager.trackMessage(channelId);
-    
-    // Get recently active avatars and increase their attention
-    const recentlyActive = this.decisionMaker.getRecentlyActiveAvatars(channelId);
-    for (const avatarId of recentlyActive) {
-      this.attentionManager.increaseAttention(channelId, avatarId, 0.15);
-    }
-
-    // Handle avatars in channel (remove duplicate loop)
-    const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(channelId);
-    for (const avatarId of avatarsInChannel) {
-      const increase = mentionsAvatar ? 0.4 : 0.1;
-      this.attentionManager.increaseAttention(channelId, avatarId, increase);
-    }
-  }
-
-  handleMention(channelId, avatarId) {
-    this.attentionManager.handleMention(channelId, avatarId);
-  }
-
   shouldRespond(channelId, avatarId, force = false) {
     try {
       if (force) return true;
@@ -435,5 +422,44 @@ export class ChatService {
       this.logger.error(`Error in shouldRespond: ${error.message}`);
       return false;
     }
+  }
+
+  setupAmbientResponses() {
+    setInterval(async () => {
+      const channels = await this.messageProcessor.getActiveChannels(this.client);
+      
+      for (const channel of channels) {
+        const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(channel.id);
+
+    
+        // sort by last response time
+        avatarsInChannel.sort((a, b) => {
+          const lastResponseA = this.decisionMaker.getRecentResponseTime(channel.id, a);
+          const lastResponseB = this.decisionMaker.getRecentResponseTime(channel.id, b);
+          return lastResponseA - lastResponseB;
+        });
+
+        
+        // Always respond as the three most recent avatars
+        for (let i = 0; i < Math.min(3, avatarsInChannel.length); i++) {
+          const avatarId = avatarsInChannel[i];
+          const avatar = await this.avatarService.getAvatar(avatarId);
+          if (avatar) {
+            await this.respondAsAvatar(channel, avatar, false);
+          }
+        }
+
+        // 50% chance to respond as the next 5
+        for (let i = 3; i < Math.min(8, avatarsInChannel.length); i++) {
+          if (Math.random() < 0.5) {
+            const avatarId = avatarsInChannel[i];
+            const avatar = await this.avatarService.getAvatar(avatarId);
+            if (avatar) {
+              await this.respondAsAvatar(channel, avatar, false);
+            }
+          }
+        }
+      }
+    }, this.AMBIENT_CHECK_INTERVAL);
   }
 }

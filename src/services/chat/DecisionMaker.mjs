@@ -1,10 +1,9 @@
 const DECISION_MODEL = 'meta-llama/llama-3.2-1b-instruct';
 
 export class DecisionMaker {
-  constructor(aiService, logger, attentionManager) {
+  constructor(aiService, logger) {
     this.aiService = aiService;
     this.logger = logger;
-    this.attentionManager = attentionManager;
     this.recentResponses = new Map(); // channelId -> Map<avatarId, timestamp>
     this.RECENT_WINDOW = 5 * 60 * 1000; // 5 minutes
     this.botMentionDebounce = new Map(); // avatarId -> timestamp
@@ -54,17 +53,7 @@ export class DecisionMaker {
       const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
                               (avatar.emoji && lastMessage.content.includes(avatar.emoji));
       
-      if (isAvatarMentioned) {
-        // Check debounce
-        const lastBotMention = this.botMentionDebounce.get(avatar.id);
-        if (lastBotMention && Date.now() - lastBotMention < this.BOT_MENTION_COOLDOWN) {
-          // Increase attention but don't respond
-          this.attentionManager.increaseAttention(channel.id, avatar.id, 0.2);
-          return false;
-        }
-        // Update debounce timer
-        this.botMentionDebounce.set(avatar.id, Date.now());
-      }
+      return isAvatarMentioned;
     }
 
     // calculate the percentage of messages that are from .bot
@@ -86,23 +75,7 @@ export class DecisionMaker {
     }
 
     try {
-      // Check for recent bot activity first
-      const recentBotActivity = await this.attentionManager.checkRecentBotActivity(channel);
-      if (recentBotActivity) {
-        this.logger.info('Recent bot activity detected, skipping response');
-        return false;  
-      }
 
-      // Consider recent activity in attention decisions
-      const isRecentlyActive = this.getRecentlyActiveAvatars(channel.id).includes(avatar.id);
-      if (isRecentlyActive) {
-        this.attentionManager.increaseAttention(channel.id, avatar.id, 0.2);
-      }
-
-      // Use unified attention manager decision
-      const shouldRespond = this.attentionManager.shouldRespond(channel.id, avatarId);
-      
-      if (shouldRespond) {
         // Get recent messages for context
         const messages = await channel.messages.fetch({ limit: 5 });
         const context = messages.reverse().map(m => ({
@@ -112,9 +85,7 @@ export class DecisionMaker {
 
         const decision = await this.makeDecision(avatar, context);
         return decision.decision === 'YES';
-      }
 
-      return false;
     } catch (error) {
       this.logger.error(`Error in shouldRespond: ${error.message}`);
       return false;

@@ -11,11 +11,9 @@ import {
   reactToMessage,
   replyToMessage,
   sendAsWebhook,
-  getRecentMessages,
-  sendLongMessage,
-  sendToThread,
 } from './services/discordService.mjs';
 import { ChatService } from './services/chat/ChatService.mjs'; // Updated import path
+import { MessageHandler } from './services/chat/MessageHandler.mjs';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -24,7 +22,7 @@ const aiService = new AIService();
 
 // Initialize Logger
 const logger = winston.createLogger({
-  level: 'error',
+  level: 'warn',
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.printf(
@@ -77,44 +75,32 @@ let messagesCollection;
 const avatarService = new AvatarGenerationService();
 
 /**
- * Connects to MongoDB and initializes necessary collections.
- */
-async function connectToDatabase() {
-  const maxRetries = 3;
-  const retryDelay = 5000;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await mongoClient.connect();
-      const db = mongoClient.db(MONGO_DB_NAME);
-      messagesCollection = db.collection('messages');
-      await avatarService.connectToDatabase(db);
-      logger.info('🗄️ Connected to MongoDB');
-      return true;
-    } catch (error) {
-      logger.error(`Database connection attempt ${attempt} failed: ${error.message}`);
-      if (attempt === maxRetries) {
-        throw error;
-      }
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
-    }
-  }
-}
-
-/**
  * Saves a message to the database.
  * @param {Message} message - The Discord message object.
  */
 async function saveMessageToDatabase(message) {
+  if (!messagesCollection) {
+    logger.error('Messages collection not initialized');
+    return;
+  }
+
   try {
-    await messagesCollection.insertOne({
+    const messageData = {
       messageId: message.id,
       channelId: message.channel.id,
       authorId: message.author.id,
       authorUsername: message.author.username,
       content: message.content,
       timestamp: message.createdTimestamp,
-    });
+    };
+
+    // Validate required fields
+    if (!messageData.messageId || !messageData.channelId) {
+      logger.error('Missing required message data:', messageData);
+      return;
+    }
+
+    await messagesCollection.insertOne(messageData);
     logger.info('💾 Message saved to database');
   } catch (error) {
     logger.error(`Failed to save message to database: ${error.message}`);
@@ -166,14 +152,59 @@ async function handleBreedCommand(message, args) {
  */
 async function handleCreateCommand(message, args) {
   let prompt = args.join(' ');
-  // If no prompt provided, check for default Arweave prompt URL in env
-  if (!prompt && process.env.DEFAULT_AVATAR_PROMPT_URL) {
-    prompt = process.env.DEFAULT_AVATAR_PROMPT_URL;
-  } else if (!prompt) {
-    prompt = 'create a new avatar, use your imagination!';
-  }
-
+  let existingAvatar = null; // Declare at the start
+  
   try {
+    // First check if this might be summoning an existing avatar
+    const avatars = await avatarService.getAllAvatars();
+    existingAvatar = await findAvatarByName(prompt, avatars);
+
+    // Update the summon existing avatar logic
+    if (existingAvatar) {
+      const avatarId = existingAvatar.id || existingAvatar._id?.toString();
+      if (!avatarId) {
+        throw new Error('Avatar has no valid ID');
+      }
+
+      await reactToMessage(client, message.channel.id, message.id, existingAvatar.emoji || '🔮');
+      
+      // Update both in-memory tracking and database position
+      if (chatService?.avatarTracker) {
+        // Track in memory
+        const success = await chatService.avatarTracker.addAvatarToChannel(
+          avatarId,
+          message.channel.id,
+          message.guild.id
+        );
+        
+        if (success) {
+          // Update database position
+          await chatService.dungeonService.updateAvatarPosition(avatarId, message.channel.id);
+          
+          // Send a message to the channel
+          const intro = `🔮 **${existingAvatar.name}** appears!
+          
+          ${existingAvatar.description}`
+          await sendAsWebhook(
+            client,
+            message.channel.id,
+            intro,
+            existingAvatar.name,
+            existingAvatar.imageUrl
+          );
+        }
+      }
+      return;
+    }
+
+    // If no existing avatar found, proceed with creating new one
+    // If no prompt provided, check for default Arweave prompt URL in env
+    if (!prompt && process.env.DEFAULT_AVATAR_PROMPT_URL) {
+      prompt = process.env.DEFAULT_AVATAR_PROMPT_URL;
+    } else if (!prompt) {
+      prompt = 'create a new avatar, use your imagination!';
+    }
+
     const avatarData = {
       prompt: sanitizeInput(prompt),
       channelId: message.channel.id,
@@ -196,7 +227,7 @@ async function handleCreateCommand(message, args) {
       await replyToMessage(client, message.channel.id, message.id, replyContent);
 
       if (!createdAvatar.model) {
-        createdAvatar.model = this.aiService.selectRandomModel();
+        createdAvatar.model = aiService.selectRandomModel(); // Remove 'this.'
       }
 
       let intro = await aiService.chat([
@@ -219,11 +250,26 @@ async function handleCreateCommand(message, args) {
         createdAvatar.imageUrl
       );
 
+      // Initialize avatar position in current channel instead of market
+      await chatService.dungeonService.initializeAvatar(createdAvatar.id, message.channel.id);
+
+      // Add to current channel tracking
+      if (chatService?.avatarTracker) {
+        await chatService.avatarTracker.addAvatarToChannel(
+          createdAvatar.id,
+          message.channel.id,
+          message.guild.id
+        );
+      }
+
     } else {
       throw new Error('Avatar missing required fields after creation:', JSON.stringify(createdAvatar, null, 2));
     }
   } catch (error) {
-    logger.error(`Error creating avatar: ${error.message}`);
+    logger.error(`Error in summon command: ${error.message}`);
+    if (existingAvatar) {
+      logger.debug('Avatar data:', JSON.stringify(existingAvatar, null, 2));
+    }
     await reactToMessage(client, message.channel.id, message.id, '❌');
   }
 }
@@ -237,6 +283,15 @@ function sanitizeInput(input) {
   // Remove all characters except letters, numbers, whitespace, and emojis
   // \p{Emoji} matches any emoji character
   return input.replace(/[^\p{L}\p{N}\s\p{Emoji}]/gu, '').trim();
+}
+
+// Add this new function after sanitizeInput
+async function findAvatarByName(name, avatars) {
+  const sanitizedName = sanitizeInput(name.toLowerCase());
+  return avatars.find(avatar => 
+    avatar.name.toLowerCase() === sanitizedName ||
+    sanitizeInput(avatar.name.toLowerCase()) === sanitizedName
+  );
 }
 
 /**
@@ -312,80 +367,24 @@ async function handleCommands(message, args) {
 
 client.on('messageCreate', async (message) => {
   try {
-    // Process commands 
+    if (!messageHandler) {
+      logger.error('MessageHandler not initialized');
+      return;
+    }
+
+    // Handle commands first
     if (message.content.startsWith('!')) {
       const [command, ...args] = message.content.slice(1).split(' ');
       await handleCommands(message, args);
-    }
-
-    // Ensure chatService exists before calling methods
-    if (chatService && typeof chatService.updateLastMessageTime === 'function') {
-      chatService.updateLastMessageTime();
+      return;
     }
 
     // Save message to database
     await saveMessageToDatabase(message);
+
+    // Let MessageHandler handle everything else
+    await messageHandler.handleMessage(message);
     
-    // Track message for attention decay
-    if (chatService) {
-      chatService.markChannelActivity(message.channel.id);
-    }
-
-    // Handle replies to avatar messages
-    if (message.reference && message.reference.messageId) {
-      const repliedMessageId = message.reference.messageId;
-      const repliedAvatarId = chatService.attentionManager.getMessageAuthorAvatar(repliedMessageId);
-      
-      if (repliedAvatarId) {
-        const avatars = await avatarService.getAllAvatars();
-        const repliedAvatar = avatars.find(a => (a.id || a._id?.toString()) === repliedAvatarId);
-        if (repliedAvatar) {
-          logger.info(`Processing reply to avatar message: ${repliedAvatar.name} (${repliedAvatarId})`);
-          chatService.attentionManager.handleMention(message.channel.id, repliedAvatarId);
-          await chatService.conversationHandler.sendResponse(message.channel, repliedAvatar, !message.author.bot);
-        }
-      }
-    }
-
-    // Handle avatar mentions - only if they're in the channel
-    const avatars = await avatarService.getAllAvatars();
-    const mentionedAvatars = extractMentionedAvatars(message.content, avatars)
-      .filter(avatar => chatService.avatarTracker.isAvatarInChannel(message.channel.id, avatar.id));
-
-    if (mentionedAvatars.size > 0) {
-      for (const avatar of mentionedAvatars) {
-        const avatarId = avatar.id || avatar._id.toString();
-        chatService.attentionManager.handleMention(message.channel.id, avatarId, message.author.id);
-        await chatService.conversationHandler.sendResponse(message.channel, avatar, true, null, message.author.bot);
-      }
-    } else {
-      // Check for ambient responses only from avatars in this channel
-      const avatarsInChannel = chatService.avatarTracker.getAvatarsInChannel(message.channel.id);
-      for (const avatarId of avatarsInChannel) {
-        const avatar = avatars.find(a => a.id === avatarId);
-        if (avatar) {
-          await chatService.conversationHandler.sendResponse(
-            message.channel, 
-            avatar, 
-            false, 
-            message.author.id,
-            message.author.bot
-          );
-        }
-      }
-    }
-
-    // Track message with author ID
-    if (chatService) {
-      chatService.markChannelActivity(message.channel.id, false, message.author.id);
-    }
-
-    // Track message for location summaries if in a location thread
-    if (message.channel.isThread()) {
-      const locationService = chatService.dungeonService.locationService;
-      await locationService.trackLocationMessage(message.channel.id, message);
-    }
-
   } catch (error) {
     logger.error(`Error processing message: ${error.stack}`);
   }
@@ -437,11 +436,23 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Instantiate ChatService (declare here for shutdown handling)
 let chatService;
+let messageHandler;
 
 // Fix the IIFE syntax and add error handling
 async function main() {
+  let dbConnected = false;
   try {
-    await connectToDatabase();
+    // Connect to database first
+    await mongoClient.connect();
+    dbConnected = true;
+    const db = mongoClient.db(MONGO_DB_NAME);
+    messagesCollection = db.collection('messages');
+    
+    // Initialize avatar service
+    await avatarService.connectToDatabase(db);
+    
+
+    dbConnected = true;
     logger.info('✅ Connected to database successfully');
     
     // Update all Arweave prompts
@@ -449,14 +460,17 @@ async function main() {
     await avatarService.updateAllArweavePrompts();
     logger.info('✅ Arweave prompts updated successfully');
     
-    // Initialize chat service
-    chatService = new ChatService(client, mongoClient, {
+    // Initialize chat service with all required dependencies
+    chatService = new ChatService(client, db, {
       logger,
       avatarService,
       aiService,
     });
 
-    // Login to Discord
+    // Initialize message handler
+    messageHandler = new MessageHandler(chatService, avatarService, logger);
+
+    // Login to Discord before starting services
     await client.login(BOT_TOKEN);
     logger.info('✅ Logged into Discord successfully');
 
@@ -471,6 +485,13 @@ async function main() {
 
   } catch (error) {
     logger.error(`Fatal startup error: ${error.stack || error.message}`);
+    if (dbConnected) {
+      try {
+        await mongoClient.close();
+      } catch (closeError) {
+        logger.error(`Error closing database: ${closeError.message}`);
+      }
+    }
     await shutdown('STARTUP_ERROR');
   }
 }

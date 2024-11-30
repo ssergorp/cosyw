@@ -24,8 +24,13 @@ export class ConversationHandler {
     this.BOT_RESPONSE_INTERVAL = 30000; // Check every 30 seconds
     this.BOT_RESPONSE_CHANCE = 0.3; // 30% chance to respond to bot messages
     
-    // Start the bot message polling
-    setInterval(() => this.processBotMessageQueue(), this.BOT_RESPONSE_INTERVAL);
+    // Update cooldown times
+    this.HUMAN_RESPONSE_COOLDOWN = 5000;  // 5 seconds for human messages
+    this.BOT_RESPONSE_COOLDOWN = 300000;  // 5 minutes for bot messages
+    this.INITIAL_RESPONSE_COOLDOWN = 10000; // 10 seconds after joining channel
+    
+    // Track last response times
+    this.lastResponses = new Map(); // channelId -> Map<avatarId, {timestamp, wasBot}>
   }
 
   async checkIdleUpdate(avatars) {
@@ -173,56 +178,11 @@ Describe:
       .join('\n\n');
   }
   
-  async sendResponse(channel, avatar, wasExplicitlyMentioned = false, authorId = null, isBot = false) {
+  async sendResponse(channel, avatar) {
     const avatarId = avatar.id || avatar._id?.toString();
     const channelId = channel.id;
 
-    // Check if avatar is allowed to respond in this channel
-    if (!this.avatarTracker.isAvatarInChannel(channelId, avatarId)) {
-      this.logger.debug(`${avatar.name} cannot respond in channel ${channelId} (not present)`);
-      return;
-    }
-
-    // If it's a bot message and not explicitly mentioned, add to queue
-    if (isBot && !wasExplicitlyMentioned) {
-      if (!this.botMessageQueue.has(channelId)) {
-        this.botMessageQueue.set(channelId, []);
-      }
-      
-      this.botMessageQueue.get(channelId).push({
-        channel,
-        avatar,
-        timestamp: Date.now()
-      });
-      
-      return;
-    }
-
     try {
-      const avatarId = avatar.id || avatar._id?.toString();
-      const channelId = channel.id;
-
-      // Add avatar to channel if not already tracked
-      if (!this.avatarTracker.isAvatarInChannel(channelId, avatarId)) {
-        this.avatarTracker.addAvatarToChannel(channelId, avatarId, channel.guild.id);
-      }
-
-      // Check if avatar should respond
-      const shouldAutoRespond = this.avatarTracker.shouldAutoRespond(channelId, avatarId, authorId);
-      const isRecentlyMentioned = this.avatarTracker.isRecentlyMentioned(channelId, avatarId);
-
-      // If not explicitly mentioned and no auto-response conditions met, skip
-      if (!wasExplicitlyMentioned && !shouldAutoRespond && !isRecentlyMentioned) {
-        this.logger.debug(`${avatar.name} decided not to respond (no recent mention/interaction)`);
-        return;
-      }
-
-      // Check response cooldown
-      const lastResponse = this.getLastResponseTime(avatarId, channelId);
-      if (lastResponse && Date.now() - lastResponse < this.RESPONSE_COOLDOWN) {
-        this.logger.info(`Response cooldown active for ${avatar.name} in channel ${channelId}`);
-        return;
-      }
 
       // Get recent channel messages
       const messages = await channel.messages.fetch({ limit: 10 });
@@ -231,6 +191,11 @@ Describe:
         content: msg.content,
         timestamp: msg.createdTimestamp
       }));
+
+      // if the last message was from this avatar, skip
+      if (messageHistory[messageHistory.length - 1].author === avatar.name) {
+        return;
+      }
 
       // Get avatar's recent reflection
       const lastNarrative = await this.getLastNarrative(avatarId);
@@ -335,6 +300,9 @@ Describe:
       // Update cooldown
       this.updateResponseCooldown(avatarId, channelId);
       
+      // Update last response time and type
+      this.updateLastResponse(channelId, avatarId, now, isBot);
+      
       return response;
 
     } catch (error) {
@@ -343,14 +311,22 @@ Describe:
     }
   }
 
-  async handleMessage(message, avatarId, wasExplicitlyMentioned = false) {
-    if (wasExplicitlyMentioned) {
-      // Handle mention with maximum attention
-      this.avatarTracker.handleMention(message.channel.id, avatarId);
-    } else {
-      // Track message for attention decay and mention memory
-      this.avatarTracker.trackChannelMessage(message.channel.id);
+  calculateCooldown(lastResponseData, isBot) {
+    if (!lastResponseData) {
+      return this.INITIAL_RESPONSE_COOLDOWN;
     }
+    return isBot ? this.BOT_RESPONSE_COOLDOWN : this.HUMAN_RESPONSE_COOLDOWN;
+  }
+
+  getLastResponse(channelId, avatarId) {
+    return this.lastResponses.get(channelId)?.get(avatarId);
+  }
+
+  updateLastResponse(channelId, avatarId, timestamp, wasBot) {
+    if (!this.lastResponses.has(channelId)) {
+      this.lastResponses.set(channelId, new Map());
+    }
+    this.lastResponses.get(channelId).set(avatarId, { timestamp, wasBot });
   }
 
   getLastResponseTime(avatarId, channelId) {
@@ -366,7 +342,12 @@ Describe:
 
   async buildSystemPrompt(avatar) {
     const basePrompt = `You are ${avatar.name}. ${avatar.personality}`;
+    const sentimentPrompt = `You have not deveveloped any sentiments yet.`;
     const dungeonPrompt = `
+    Sentiments:
+    
+    ${sentimentPrompt}
+
     Available commands:
     ${this.dungeonService.getCommandsDescription()}
     
@@ -391,52 +372,4 @@ Describe:
     
     return basePrompt + locationPrompt + movementPrompt + dungeonPrompt;
   }
-
-  extractCombatCommands(text) {
-    const commands = [];
-    const lines = text.split('\n');
-    
-    for (const line of lines) {
-      // Check for natural language combat phrases
-      if (line.toLowerCase().includes('attack')) {
-        const match = line.match(/(?:attack|strikes|hits) (\w+)/i);
-        if (match) {
-          commands.push({ command: 'attack', params: [match[1]] });
-        }
-      }
-      // Add more command patterns as needed
-    }
-    
-    return commands;
-  }
-  
-  // Add new method to check recent mentions
-  isRecentlyMentioned(channelId, avatarId) {
-    return this.avatarTracker.isRecentlyMentioned(channelId, avatarId);
-  }
-  
-  async processBotMessageQueue() {
-    for (const [channelId, queue] of this.botMessageQueue.entries()) {
-      if (!queue.length) continue;
-
-      // Process messages that are at least 1 minute old
-      const now = Date.now();
-      const oldMessages = queue.filter(item => now - item.timestamp >= 60000);
-      
-      for (const item of oldMessages) {
-        if (Math.random() < this.BOT_RESPONSE_CHANCE) {
-          await this.sendResponse(item.channel, item.avatar, false);
-        }
-        // Remove processed message
-        const index = queue.indexOf(item);
-        queue.splice(index, 1);
-      }
-
-      // Clean up empty queues
-      if (!queue.length) {
-        this.botMessageQueue.delete(channelId);
-      }
-    }
-  }
-  
 }

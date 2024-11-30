@@ -33,8 +33,7 @@ export class DungeonProcessor {
         const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(message.channel.id);
         for (const avatarId of avatarsInChannel) {
           // Initialize/increase attention safely
-          this.avatarTracker.addAvatarToChannel(message.channel.id, avatarId, message.guild.id);
-          this.avatarTracker.increaseAttention(message.channel.id, avatarId, 2);
+          this.avatarTracker.addAvatarToChannel(avatarId, message.channel.id, message.guild.id);
         }
       }
 

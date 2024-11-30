@@ -14,10 +14,15 @@ export class MoveTool extends BaseTool {
   }
 
   async execute(message, params) {
-    // Check if bot is in this channel
     const avatarId = message.author.id;
     const channelId = message.channel.id;
     
+    // Add fallback check for avatarTracker
+    if (!this.dungeonService.avatarTracker) {
+      this.logger?.error('AvatarTracker not initialized in DungeonService');
+      return "Movement system is currently unavailable";
+    }
+
     if (!this.dungeonService.avatarTracker?.isAvatarInChannel(channelId, avatarId)) {
       return "You must be in this channel to move from here!";
     }
@@ -30,7 +35,6 @@ export class MoveTool extends BaseTool {
       return "Move where? Specify a destination!";
     }
 
-    const avatarId = message.author.id;
     let destination = params.join(' ');
 
     // remove 'to ' from the beginning
@@ -91,15 +95,6 @@ export class MoveTool extends BaseTool {
 
       // Update position and set maximum attention in new location
       await this.dungeonService.updateAvatarPosition(avatarId, newLocation.id);
-      
-      // Add extra validation for attention management
-      if (this.dungeonService.attentionManager) {
-        this.dungeonService.client.emit('avatarMoved', {
-          avatarId,
-          newChannelId: newLocation.channel.id,
-          temporary: message.mentions?.has(avatarId)
-        });
-      }
 
       // Generate and send arrival message
       try {

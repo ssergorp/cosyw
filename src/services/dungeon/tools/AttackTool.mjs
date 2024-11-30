@@ -3,7 +3,7 @@ import { BaseTool } from './BaseTool.mjs';
 export class AttackTool extends BaseTool {
   async execute(message, params) {
     if (!params || !params[0]) {
-      return "Attack what? Specify a target!";
+      return "🤺 Attack what? Specify a target!";
     }
 
     const attackerId = message.author.id;
@@ -11,10 +11,10 @@ export class AttackTool extends BaseTool {
     const location = await this.dungeonService.getAvatarLocation(attackerId);
     
     const targetAvatar = await this.dungeonService.findAvatarInArea(targetName, location);
-    if (!targetAvatar) return "Target not found in this area.";
+    if (!targetAvatar) return `🫠 Target [${targetName}] not found in this area.`;
 
     if (targetAvatar.status === 'dead') {
-      return `${targetName} is already dead! Have some respect for the fallen.`;
+      return `⚰️ ${targetName} is already dead! Have some respect for the fallen.`;
     }
 
     const stats = await this.dungeonService.getAvatarStats(attackerId);
@@ -28,7 +28,7 @@ export class AttackTool extends BaseTool {
     }
 
     await this.dungeonService.updateAvatarStats(targetAvatar.id, targetStats);
-    return `${message.author.username} attacks ${targetName} for ${damage} damage!`;
+    return `⚔️ ${message.author.username} attacks ${targetName} for ${damage} damage!`;
   }
 
   async handleKnockout(message, targetAvatar, targetName, damage) {
@@ -38,13 +38,13 @@ export class AttackTool extends BaseTool {
       targetAvatar.status = 'dead';
       targetAvatar.deathTimestamp = Date.now();
       await this.dungeonService.avatarService.updateAvatar(targetAvatar);
-      return `${message.author.username} has dealt the final blow! ${targetName} has fallen permanently! ☠️`;
+      return `💀 ${message.author.username} has dealt the final blow! ${targetName} has fallen permanently! ☠️`;
     }
 
     // Reset HP and update lives
     targetAvatar.hp = 100;
     await this.dungeonService.avatarService.updateAvatar(targetAvatar);
-    return `${message.author.username} attacks ${targetName} for ${damage} damage! ${targetName} loses a life! Remaining lives: ${targetAvatar.lives} ❣️`;
+    return `⚔️ ${message.author.username} attacks ${targetName} for ${damage} damage! ${targetName} loses a life! Remaining lives: ${targetAvatar.lives} ❣️`;
   }
 
   getDescription() {
