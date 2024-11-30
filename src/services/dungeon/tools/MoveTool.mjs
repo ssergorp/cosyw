@@ -15,17 +15,7 @@ export class MoveTool extends BaseTool {
 
   async execute(message, params) {
     const avatarId = message.author.id;
-    const channelId = message.channel.id;
     
-    // Add fallback check for avatarTracker
-    if (!this.dungeonService.avatarTracker) {
-      this.logger?.error('AvatarTracker not initialized in DungeonService');
-      return "Movement system is currently unavailable";
-    }
-
-    if (!this.dungeonService.avatarTracker?.isAvatarInChannel(channelId, avatarId)) {
-      return "You must be in this channel to move from here!";
-    }
 
     if (!message.channel.guild) {
       return "This command can only be used in a guild!";
@@ -94,7 +84,7 @@ export class MoveTool extends BaseTool {
       }
 
       // Update position and set maximum attention in new location
-      await this.dungeonService.updateAvatarPosition(avatarId, newLocation.id);
+      await this.dungeonService.updateAvatarPosition(avatarId, newLocation.channel.id);
 
       // Generate and send arrival message
       try {
@@ -104,6 +94,9 @@ export class MoveTool extends BaseTool {
           `*Moved to <#${newLocation.channel.id}>*\n\n${arrivalMessage}`, 
           this.dungeonService.client
         );
+
+        avatar.channelId = newLocation.channel.id;
+        await this.dungeonService.avatarService.updateAvatar(avatar);
         
         await sendAsWebhook(
           this.dungeonService.client,

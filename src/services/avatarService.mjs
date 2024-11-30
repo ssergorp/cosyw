@@ -56,7 +56,7 @@ export class AvatarGenerationService {
     this.arweaveService = new ArweaveService();
     this.prompts = null;
   }
-  
+
   /**
    * Connects the service to the MongoDB database.
    */
@@ -109,7 +109,7 @@ export class AvatarGenerationService {
       }
 
       const avatars = await collection.find(query).toArray();
-      
+
       return avatars.map(avatar => ({
         ...avatar,
         id: avatar.id || avatar._id.toString(),
@@ -118,6 +118,35 @@ export class AvatarGenerationService {
       this.logger.error(`Error fetching avatars: ${error.message}`);
       return [];
     }
+  }
+
+  async getAvatarsInChannel(channelId) {
+    try {
+      const collection = this.db.collection(this.AVATARS_COLLECTION);
+      const avatars = await collection
+        .find({ channelId })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      return avatars.map(avatar => ({
+        ...avatar,
+        id: avatar.id || avatar._id.toString(),
+      }));
+    } catch (error) {
+      this.logger.error(`Error fetching avatars in channel: ${error.message}`);
+      return [];
+    }
+  }
+
+  async getAvatarById(id) {
+    const collection = this.db.collection(this.AVATARS_COLLECTION);
+    const avatar = await collection
+      .findOne({ _id: ObjectId.createFromHexString(id) });
+
+    if (!avatar) {
+      throw new Error(`Avatar with ID "${id}" not found.`);
+    }
+    return avatar;
   }
 
   async retryOperation(operation, maxAttempts = 3) {
@@ -137,7 +166,7 @@ export class AvatarGenerationService {
   async getAvatarById(id) {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
-      const avatar = await collection.findOne({ _id: id });
+      const avatar = await collection.findOne({ _id: ObjectId.createFromHexString(id) });
       if (!avatar) {
         throw new Error(`Avatar with ID "${id}" not found.`);
       }
@@ -582,7 +611,7 @@ export class AvatarGenerationService {
         throw new Error(`Failed to fetch Arweave prompt: ${response.statusText}`);
       }
       const prompt = await response.text();
-      
+
       // Update the avatar's prompt
       await this.avatarsCollection.updateOne(
         { _id: avatar._id },

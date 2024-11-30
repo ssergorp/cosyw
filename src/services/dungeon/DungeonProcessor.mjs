@@ -4,12 +4,10 @@ export class DungeonProcessor {
     this.logger = logger;
     this.commandPrefix = '!';
     this.commands = ['attack', 'defend', 'move'];
-    this.avatarTracker = null;
     this.avatarService = null;
   }
 
-  setServices(avatarTracker, avatarService) {
-    this.avatarTracker = avatarTracker;
+  setServices(avatarService) {
     this.avatarService = avatarService;
     this.dungeonService.setAvatarService(avatarService);
   }
@@ -27,15 +25,6 @@ export class DungeonProcessor {
     try {
       // Extract commands first
       const { commands, cleanText } = this.dungeonService.extractToolCommands(message.content);
-      
-      // Handle attention before processing commands
-      if (commands.some(cmd => ['attack', 'defend'].includes(cmd.command))) {
-        const avatarsInChannel = this.avatarTracker.getAvatarsInChannel(message.channel.id);
-        for (const avatarId of avatarsInChannel) {
-          // Initialize/increase attention safely
-          this.avatarTracker.addAvatarToChannel(avatarId, message.channel.id, message.guild.id);
-        }
-      }
 
       // Process commands
       for (const { command, params } of commands) {

@@ -65,7 +65,7 @@ const models = [
     },
     {
       "model": "x-ai/grok-beta",
-      "rarity": "common"
+      "rarity": "legedary"
     }
   ];
 

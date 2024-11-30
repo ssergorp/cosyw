@@ -7,10 +7,10 @@ import { CreationTool } from './tools/CreationTool.mjs';
 import { OpenRouterService } from '../openrouterService.mjs';
 
 export class DungeonService {
-  constructor(client, logger, avatarTracker = null) {
+  constructor(client, logger, avatarService = null) {
     this.client = client;
     this.logger = logger;
-    this.avatarTracker = avatarTracker; // Store the avatarTracker
+    this.avatarService = avatarService;
     this.locations = new Map(); // locationId -> {areas: Map<threadId, areaData>}
     this.avatarPositions = new Map(); // avatarId -> {locationId, areaId}
     this.avatarStats = new Map(); // avatarId -> {hp, attack, defense}
@@ -69,10 +69,6 @@ export class DungeonService {
       cleanText,
       commandLines
     };
-  }
-
-  setAvatarTracker(avatarTracker) {
-    this.avatarTracker = avatarTracker;
   }
 
   async initializeDatabase() {
@@ -173,7 +169,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db('cosyworld2');
       const avatar = await db.collection('avatars')
         .findOne({ 
           name: new RegExp(avatarName, 'i'),
@@ -220,7 +216,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       
       // Update position
       await db.collection('dungeon_positions').updateOne(
@@ -237,7 +233,7 @@ export class DungeonService {
       // Emit event for tracking
       this.client.emit('avatarMoved', {
         avatarId,
-        newLocationId,
+        newChannelId: newLocationId,
         temporary: false
       });
 

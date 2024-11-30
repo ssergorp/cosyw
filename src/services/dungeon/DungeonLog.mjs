@@ -10,7 +10,7 @@ export class DungeonLog {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       await db.collection('dungeon_log').insertOne({
         ...action,
         timestamp: Date.now()

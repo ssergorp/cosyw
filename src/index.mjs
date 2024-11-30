@@ -123,8 +123,8 @@ async function handleBreedCommand(message, args) {
     );
 
 
-      // combine the prompt, dynamicPersonality, and description of the two avatars into a message for createAvatar
-      const prompt = `Breed the following avatars, and create a new avatar:
+    // combine the prompt, dynamicPersonality, and description of the two avatars into a message for createAvatar
+    const prompt = `Breed the following avatars, and create a new avatar:
       AVATAR 1: ${avatar1.name} - ${avatar1.prompt}
       ${avatar1.description}
       ${avatar1.dynamicPersonality}
@@ -134,7 +134,7 @@ async function handleBreedCommand(message, args) {
       ${avatar2.dynamicPersonality}
       `;
 
-      return await handleCreateCommand(message, [prompt]);
+    return await handleCreateCommand(message, [prompt]);
   } else {
     await replyToMessage(
       client,
@@ -146,6 +146,44 @@ async function handleBreedCommand(message, args) {
 }
 
 /**
+ * Handles the !attack command to attack another avatar.
+ */
+async function handleAttackCommand(message, args) {
+  if (args.length < 1) {
+    await replyToMessage(
+      client,
+      message.channel.id,
+      message.id,
+      'Please mention an avatar to attack.'
+    );
+    return;
+  }
+
+  const targetName = args.join(' ');
+  const avatars = await avatarService.getAllAvatars();
+  const targetAvatar = await findAvatarByName(targetName, avatars);
+
+  if (!targetAvatar) {
+    await replyToMessage(
+      client,
+      message.channel.id,
+      message.id,
+      `Could not find an avatar named "${targetName}".`
+    );
+    return;
+  }
+
+  const attackResult = await chatService.dungeonService.tools.get('attack').execute(message, [targetAvatar.name]);
+
+  await replyToMessage(
+    client,
+    message.channel.id,
+    message.id,
+    `🔥 **${attackResult}**`
+  );
+}
+
+/**
  * Handles the !summon command to create a new avatar.
  * @param {Message} message - The Discord message object.
  * @param {Array} args - The arguments provided with the command.
@@ -153,7 +191,7 @@ async function handleBreedCommand(message, args) {
 async function handleCreateCommand(message, args) {
   let prompt = args.join(' ');
   let existingAvatar = null; // Declare at the start
-  
+
   try {
     // First check if this might be summoning an existing avatar
     const avatars = await avatarService.getAllAvatars();
@@ -167,33 +205,27 @@ async function handleCreateCommand(message, args) {
       }
 
       await reactToMessage(client, message.channel.id, message.id, existingAvatar.emoji || '🔮');
-      
-      // Update both in-memory tracking and database position
-      if (chatService?.avatarTracker) {
-        // Track in memory
-        const success = await chatService.avatarTracker.addAvatarToChannel(
-          avatarId,
-          message.channel.id,
-          message.guild.id
-        );
-        
-        if (success) {
-          // Update database position
-          await chatService.dungeonService.updateAvatarPosition(avatarId, message.channel.id);
+
+
+      // Update database position
+      await chatService.dungeonService.updateAvatarPosition(avatarId, message.channel.id);
+
+      existingAvatar.channelId = message.channel.id;
+      await avatarService.updateAvatar(existingAvatar);
+
+      // Send a message to the channel
+      const intro = `🔮 **${existingAvatar.name}** appears!
           
-          // Send a message to the channel
-          const intro = `🔮 **${existingAvatar.name}** appears!
+          ${existingAvatar.description}
           
-          ${existingAvatar.description}`
-          await sendAsWebhook(
-            client,
-            message.channel.id,
-            intro,
-            existingAvatar.name,
-            existingAvatar.imageUrl
-          );
-        }
-      }
+          ${existingAvatar.imageUrl}`
+      await sendAsWebhook(
+        client,
+        message.channel.id,
+        intro,
+        existingAvatar.name,
+        existingAvatar.imageUrl
+      );
       return;
     }
 
@@ -227,11 +259,12 @@ async function handleCreateCommand(message, args) {
       await replyToMessage(client, message.channel.id, message.id, replyContent);
 
       if (!createdAvatar.model) {
-        createdAvatar.model = aiService.selectRandomModel(); // Remove 'this.'
+        createdAvatar.model = await aiService.selectRandomModel();
       }
 
       let intro = await aiService.chat([
-        { role: 'system', content: `
+        {
+          role: 'system', content: `
           You are the  avatar ${createdAvatar.name}.
           ${createdAvatar.description}
           ${createdAvatar.personality}
@@ -240,6 +273,7 @@ async function handleCreateCommand(message, args) {
       ], { model: createdAvatar.model });
 
       createdAvatar.dynamicPersonality = intro;
+      createdAvatar.channeId = message.channel.id;
       await avatarService.updateAvatar(createdAvatar);
 
       await sendAsWebhook(
@@ -251,16 +285,9 @@ async function handleCreateCommand(message, args) {
       );
 
       // Initialize avatar position in current channel instead of market
-      await chatService.dungeonService.initializeAvatar(createdAvatar.id, message.channel.id);
-
-      // Add to current channel tracking
-      if (chatService?.avatarTracker) {
-        await chatService.avatarTracker.addAvatarToChannel(
-          createdAvatar.id,
-          message.channel.id,
-          message.guild.id
-        );
-      }
+      await chatService.dungeonService.initializeAvatar(
+        createdAvatar.id, message.channel.id
+      );
 
     } else {
       throw new Error('Avatar missing required fields after creation:', JSON.stringify(createdAvatar, null, 2));
@@ -288,7 +315,7 @@ function sanitizeInput(input) {
 // Add this new function after sanitizeInput
 async function findAvatarByName(name, avatars) {
   const sanitizedName = sanitizeInput(name.toLowerCase());
-  return avatars.find(avatar => 
+  return avatars.find(avatar =>
     avatar.name.toLowerCase() === sanitizedName ||
     sanitizeInput(avatar.name.toLowerCase()) === sanitizedName
   );
@@ -357,13 +384,20 @@ async function handleCommands(message, args) {
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
 
-  if (message.content.startsWith('!breed')){
+  if (message.content.toLowerCase().startsWith('!attack ')) {
+    const args = message.content.slice(8).split(' ');
+    await reactToMessage(client, message.channel.id, message.id, '⚔️');
+    await handleAttackCommand(message, args);
+    await reactToMessage(client, message.channel.id, message.id, '✅');
+  }
+
+  if (message.content.startsWith('!breed')) {
     const args = message.content.slice(6).split(' ');
     await reactToMessage(client, message.channel.id, message.id, '🔮');
     await handleBreedCommand(message, args);
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
-} 
+}
 
 client.on('messageCreate', async (message) => {
   try {
@@ -382,9 +416,6 @@ client.on('messageCreate', async (message) => {
     // Save message to database
     await saveMessageToDatabase(message);
 
-    // Let MessageHandler handle everything else
-    await messageHandler.handleMessage(message);
-    
   } catch (error) {
     logger.error(`Error processing message: ${error.stack}`);
   }
@@ -447,19 +478,19 @@ async function main() {
     dbConnected = true;
     const db = mongoClient.db(MONGO_DB_NAME);
     messagesCollection = db.collection('messages');
-    
+
     // Initialize avatar service
     await avatarService.connectToDatabase(db);
-    
+
 
     dbConnected = true;
     logger.info('✅ Connected to database successfully');
-    
+
     // Update all Arweave prompts
     logger.info('Updating Arweave prompts for avatars...');
     await avatarService.updateAllArweavePrompts();
     logger.info('✅ Arweave prompts updated successfully');
-    
+
     // Initialize chat service with all required dependencies
     chatService = new ChatService(client, db, {
       logger,

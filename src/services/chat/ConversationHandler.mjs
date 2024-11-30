@@ -2,7 +2,7 @@ import { sendAsWebhook } from '../discordService.mjs';
 import { MongoClient } from 'mongodb';
 
 export class ConversationHandler {
-  constructor(client, aiService, logger, avatarTracker, avatarService, dungeonService) {
+  constructor(client, aiService, logger, avatarService, dungeonService) {
     this.client = client;
     this.aiService = aiService;
     this.logger = logger;
@@ -11,7 +11,6 @@ export class ConversationHandler {
     this.SUMMARY_LIMIT = 5;
     this.IDLE_TIME = 60 * 60 * 1000; // 1 hour
     this.lastUpdate = Date.now();
-    this.avatarTracker = avatarTracker;
     this.avatarService = avatarService;
     this.dungeonService = dungeonService;
 
@@ -23,12 +22,12 @@ export class ConversationHandler {
     this.botMessageQueue = new Map(); // channelId -> [{avatar, message, timestamp}]
     this.BOT_RESPONSE_INTERVAL = 30000; // Check every 30 seconds
     this.BOT_RESPONSE_CHANCE = 0.3; // 30% chance to respond to bot messages
-    
+
     // Update cooldown times
     this.HUMAN_RESPONSE_COOLDOWN = 5000;  // 5 seconds for human messages
     this.BOT_RESPONSE_COOLDOWN = 300000;  // 5 minutes for bot messages
     this.INITIAL_RESPONSE_COOLDOWN = 10000; // 10 seconds after joining channel
-    
+
     // Track last response times
     this.lastResponses = new Map(); // channelId -> Map<avatarId, {timestamp, wasBot}>
   }
@@ -40,7 +39,7 @@ export class ConversationHandler {
       this.lastUpdate = Date.now();
     }
   }
-  
+
 
   /**
    * Unified method to generate a narrative for reflection or inner monologue.
@@ -177,7 +176,7 @@ Describe:
       .map(r => `[${new Date(r.timestamp).toLocaleDateString()}] ${r.guildName}: ${r.content}`)
       .join('\n\n');
   }
-  
+
   async sendResponse(channel, avatar) {
     const avatarId = avatar.id || avatar._id?.toString();
     const channelId = channel.id;
@@ -199,7 +198,7 @@ Describe:
 
       // Get avatar's recent reflection
       const lastNarrative = await this.getLastNarrative(avatarId);
-      
+
       // Build context for response
       const context = {
         recentMessages: messageHistory,
@@ -208,7 +207,7 @@ Describe:
         guildName: channel.guild.name
       };
 
-      if (!avatar.model) {
+      if (!avatar.model || typeof avatar.model !== 'string') {
         avatar.model = await this.aiService.selectRandomModel();
         await this.avatarService.updateAvatar(avatar);
       }
@@ -225,9 +224,8 @@ Describe:
         },
         {
           role: 'user',
-          content: `Channel: #${context.channelName} in ${context.guildName}\n\nRecent messages:\n${
-            context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
-          }\n\nYou are ${avatar.name}. Respond humorously to the chat advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
+          content: `Channel: #${context.channelName} in ${context.guildName}\n\nRecent messages:\n${context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
+            }\n\nYou are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
         }
       ], {
         max_tokens: 256,
@@ -241,7 +239,7 @@ Describe:
 
       // Extract and process tool commands using dungeonService
       const { commands, cleanText, commandLines } = this.dungeonService.extractToolCommands(response);
-      
+
       let sentMessage;
       let commandResults = [];
 
@@ -250,7 +248,7 @@ Describe:
         this.logger.info(`Processing ${commands.length} commands for ${avatar.name}`);
         // Execute each command and collect results
         commandResults = await Promise.all(
-          commands.map(cmd => 
+          commands.map(cmd =>
             this.dungeonService.processAction(
               { channel, author: { id: avatarId, username: avatar.name }, content: response },
               cmd.command,
@@ -259,21 +257,25 @@ Describe:
           )
         );
 
-        
-          sentMessage = await sendAsWebhook(
-            this.client,
-            channel.id,
-            commandResults.join('\n'),
-            avatar.name + ' 🛠️',
-            avatar.imageUrl
-          );
+
+        sentMessage = await sendAsWebhook(
+          this.client,
+          channel.id,
+          commandResults.join('\n'),
+          avatar.name + ' 🛠️',
+          avatar.imageUrl
+        );
+
+        // load the avatar again to get the updated state
+        avatar = await this.avatarService.getAvatarById(avatarId);
       }
 
       // Send the main response if there's clean text
       if (!commands.length || cleanText.trim()) {
+
         sentMessage = await sendAsWebhook(
           this.client,
-          channel.id,
+          avatar.channelId,
           commands.length ? cleanText : response,
           avatar.name,
           avatar.imageUrl
@@ -292,30 +294,18 @@ Describe:
         );
       }
 
-      // Track the sent message if we have a valid message and tracker
-      if (sentMessage && this.avatarTracker) {
-        this.avatarTracker.trackAvatarMessage(sentMessage.id, avatarId);
-      }
-      
       // Update cooldown
       this.updateResponseCooldown(avatarId, channelId);
-      
+
       // Update last response time and type
-      this.updateLastResponse(channelId, avatarId, now, isBot);
-      
+      this.updateLastResponse(channelId, avatarId, Date.now(), false);
+
       return response;
 
     } catch (error) {
       this.logger.error(`Error sending response for ${avatar.name}: ${error.message}`);
       throw error;
     }
-  }
-
-  calculateCooldown(lastResponseData, isBot) {
-    if (!lastResponseData) {
-      return this.INITIAL_RESPONSE_COOLDOWN;
-    }
-    return isBot ? this.BOT_RESPONSE_COOLDOWN : this.HUMAN_RESPONSE_COOLDOWN;
   }
 
   getLastResponse(channelId, avatarId) {
@@ -361,15 +351,15 @@ Describe:
 
     !move to the forest
   `;
-    
+
     // Add location awareness to the prompt
     const location = await this.dungeonService.getAvatarLocation(avatar.id);
-    const locationPrompt = location ? 
-      `\n\nYou are currently in ${location.name}. ${location.description}` : 
+    const locationPrompt = location ?
+      `\n\nYou are currently in ${location.name}. ${location.description}` :
       '\n\nYou are wandering between locations.';
 
     const movementPrompt = `\nYou can move to new locations using the !move command.`;
-    
+
     return basePrompt + locationPrompt + movementPrompt + dungeonPrompt;
   }
 }

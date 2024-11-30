@@ -90,7 +90,7 @@ export class LocationService {
       { role: 'system', content: 'You are a mystical location describing travelers.' },
       { role: 'user', content: prompt }
     ]);
-    return response;
+    return response.replace(newLocation.name, `<#${newLocation.channel.id}>`);
   }
 
   async generateLocationDescription(locationName, imageUrl) {

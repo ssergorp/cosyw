@@ -20,11 +20,6 @@ export class MessageHandler {
     }, this.PROCESS_INTERVAL);
   }
 
-  async handleMessage(message) {
-    // Just save the message - processing happens in batch
-    return;
-  }
-
   channelTimeMap = new Map();
   async processActiveChannels() {
     try {
@@ -44,13 +39,16 @@ export class MessageHandler {
 
   async processChannel(channelId) {
     try {
-      const avatarsInChannel = await this.chatService.avatarTracker.getAvatarsInChannel(channelId);
+      // Get avatars in channel
+      const avatarsInChannel = await this.avatarService.getAvatarsInChannel(channelId);
+
       if (!avatarsInChannel.length) return;
 
       // Get recent messages directly from database
       const messages = await this.chatService.getRecentMessages(channelId);
+      const topMentions = await this.chatService.getTopMentions(messages, avatarsInChannel);
       
-      for (const [avatarId, count] of await this.getTopMentions(messages, avatarsInChannel)) {
+      for (const [avatarId, count] of topMentions) {
         // Skip if already processing this avatar for this channel
         const processingKey = `${channelId}-${avatarId}`;
         if (this.processingMessages.has(processingKey)) {
@@ -63,7 +61,7 @@ export class MessageHandler {
           const avatar = await this.avatarService.getAvatarById(avatarId);
           if (avatar) {
             const channel = await this.chatService.client.channels.fetch(channelId);
-            await this.respondAsAvatar(channel, avatar, count > 1);
+            await this.chatService.conversationHandler.sendResponse(channel, avatar, count > 1);
           }
         } finally {
           this.processingMessages.delete(processingKey);
@@ -74,24 +72,11 @@ export class MessageHandler {
     }
   }
 
-  async getTopMentions(messages, avatarsInChannel) {
-    const messageString = messages.map(m => m.content).join(' ');
-    const avatars = await this.avatarService.getAvatars(avatarsInChannel);
-    const mentionedAvatars = this.extractMentionsWithCount(messageString, avatars);
-    return [...mentionedAvatars.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
-  }
-
   stop() {
     if (this.processingInterval) {
       clearInterval(this.processingInterval);
       this.processingInterval = null;
     }
-  }
-
-  async respondAsAvatar(channel, avatar, mentioned) {
-    await this.chatService.conversationHandler.sendResponse(channel, avatar, mentioned);
   }
 
   extractMentionsWithCount(content, avatars) {

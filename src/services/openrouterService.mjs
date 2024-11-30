@@ -69,10 +69,17 @@ export class OpenRouterService {
 
   // Method to have a chat with OpenRouter
   async chat(messages, options = { model: 'meta-llama/llama-3.2-1b-instruct' }) {
+    
+    // verify that the model is available
+    let model = options.model || this.model;
+    if (!this.modelIsAvailable(model)) {
+      console.error('Invalid model provided to chat:', model);
+      model = this.model;
+    }
+
     try {
       const response = await this.openai.chat.completions.create({
-        model: options.model || this.model,
-        messages: messages.filter(T => T.content),
+        model, messages: messages.filter(T => T.content),
         ...options,
       });
       if (!response || !response.choices || response.choices.length === 0) {
@@ -81,7 +88,7 @@ export class OpenRouterService {
       }
       return response.choices[0].message.content.trim() || '...';
     } catch (error) {
-      console.error('Error while chatting with OpenRouter:', error);
+      console.error('Error while chatting with OpenRouter:', error.message);
       return null;
     }
   }

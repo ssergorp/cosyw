@@ -52,13 +52,14 @@ export class DecisionMaker {
       }
       const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
                               (avatar.emoji && lastMessage.content.includes(avatar.emoji));
-      
-      return isAvatarMentioned;
+      if (isAvatarMentioned) {
+        return true;
+      }
     }
 
     // calculate the percentage of messages that are from .bot
     const botMessageCount = channelMessages.filter(m => m.author.bot).size;
-    const botMessagePercentage = botMessageCount / channelMessages.size;
+    const botMessagePercentage = (botMessageCount / channelMessages.size) - 0.1;
 
     // randomly decide whether to respond based on the bot message percentage
     const shouldRespond = lastMessage.author.bot ? Math.random() > botMessagePercentage: true;
@@ -75,7 +76,6 @@ export class DecisionMaker {
     }
 
     try {
-
         // Get recent messages for context
         const messages = await channel.messages.fetch({ limit: 5 });
         const context = messages.reverse().map(m => ({

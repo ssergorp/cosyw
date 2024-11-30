@@ -22,7 +22,7 @@ export class DefendTool extends BaseTool {
       }
     }, boostDuration);
 
-    return `${message.author.username} takes a defensive stance! Defense increased by ${defenseBoost} for 1 minute.`;
+    return `🛡️ ${message.author.username} takes a defensive stance! Defense increased by ${defenseBoost} for 1 minute.`;
   }
 
   getDescription() {
