@@ -48,6 +48,10 @@ const models = [
       "rarity": "uncommon"
     },
     {
+      "model":"mistralai/mistral-large-2411",
+      "rarity": "uncommon"
+    },
+    {
       "model": "qwen/qwq-32b-preview",
       "rarity": "uncommon"
     },
