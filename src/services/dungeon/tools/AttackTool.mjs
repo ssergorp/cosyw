@@ -28,8 +28,7 @@ export class AttackTool extends BaseTool {
     }
 
     await this.dungeonService.updateAvatarStats(targetAvatar.id, targetStats);
-    return `⚔️ ${message.author.username} attacks ${targetAvatar.name} for ${damage} damage!
-${targetAvatar.name} has ${targetStats.hp} HP remaining.`;
+    return `⚔️ ${message.author.username} attacks ${targetAvatar.name} for ${damage} damage!`;
   }
 
   async handleKnockout(message, targetAvatar, damage) {

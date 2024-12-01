@@ -41,9 +41,9 @@ export class DungeonService {
 
     for (const line of lines) {
       // Look for !command pattern anywhere in the line
-      // const commandMatch = line.match(/!(\w+)(\s+[^!]*)?/g);
+      const commandMatch = line.match(/!(\w+)(\s+[^!]*)?/g);
       // Look for !command pattern at the start of the line
-      const commandMatch = line.match(/^!(\w+)(\s+[^!]*)?/g);
+      // const commandMatch = line.match(/^!(\w+)(\s+[^!]*)?/g);
       
       if (commandMatch) {
         // Store the full line containing commands
@@ -74,7 +74,7 @@ export class DungeonService {
   async initializeDatabase() {
     const client = new MongoClient(process.env.MONGO_URI);
     await client.connect();
-    const db = client.db('discord');
+    const db = client.db(process.env.MONGO_DB_NAME);
     
     // Create collections if they don't exist
     await db.createCollection('dungeon_locations');
@@ -120,7 +120,7 @@ export class DungeonService {
       await this.dungeonLog.logAction({
         channelId: message.channel.id,
         action: command,
-        actor: message.author.username,
+        actor: `${tool.emoji || '🛠️'} ${message.author.username} used ${command}.`,
         target: params[0],
         result
       });
@@ -141,7 +141,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       const position = await db.collection('dungeon_positions').findOne({ avatarId });
       if (!position) return null;
       
@@ -185,7 +185,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       await db.collection('dungeon_stats').updateOne(
         { avatarId },
         { $set: stats },
@@ -200,7 +200,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       return await db.collection('dungeon_locations').findOne({
         $or: [
           { id: destination },
@@ -246,7 +246,7 @@ export class DungeonService {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       const stats = await db.collection('dungeon_stats').findOne({ avatarId });
       return stats || { ...this.defaultStats, avatarId };
     } finally {

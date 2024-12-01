@@ -3,6 +3,9 @@
 import { Client, GatewayIntentBits, Partials, WebhookClient } from 'discord.js';
 import winston from 'winston';
 
+import { chunkMessage } from './utils/messageChunker.mjs';
+import { processMessageLinks } from './utils/linkProcessor.mjs';
+
 // Initialize Logger
 const logger = winston.createLogger({
   level: 'info',
@@ -98,6 +101,110 @@ async function getOrCreateWebhook(client, channel) {
   }
 }
 
+
+/**
+ * Sends an avatar profile as an embed via webhook with a custom username and avatar.
+ * @param {Client} client - The Discord client instance.
+ * @param {Object} avatar - The avatar object containing profile information.
+ */
+export async function sendAvatarProfileEmbedFromObject(client, avatar) {
+  if (!avatar || typeof avatar !== 'object') {
+    throw new Error('Invalid avatar object provided.');
+  }
+
+  const {
+    name,
+    emoji,
+    description,
+    imageUrl,
+    channelId,
+    model,
+    createdAt,
+    updatedAt,
+    traits, // Assuming 'traits' is a string; adjust if it's an array
+    innerMonologueThreadId, // Assuming this is optional
+  } = avatar;
+
+  if (!channelId || typeof channelId !== 'string') {
+    throw new Error(`Invalid channel ID: ${channelId}`);
+  }
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) {
+      throw new Error(`Channel not found or is not a text channel: ${channelId}`);
+    }
+
+    // Get or create webhook
+    const webhook = await getOrCreateWebhook(client, channel);
+
+    // Create the embed using EmbedBuilder
+    const avatarEmbed = new EmbedBuilder()
+      .setColor(0x1e90ff) // DodgerBlue; customize as needed
+      .setTitle(`${emoji} ${name}`)
+      .setURL(innerMonologueThreadId
+        ? `https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId}`
+        : `https://discord.com/users/${channel.guildId}`) // Adjust URL as needed
+      .setAuthor({
+        name: `${name} ${emoji}`,
+        iconURL: imageUrl,
+        url: innerMonologueThreadId
+          ? `https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId}`
+          : `https://discord.com/users/${channel.guildId}`, // Adjust URL as needed
+      })
+      .setDescription(description || 'No description found.')
+      .setThumbnail(imageUrl)
+      .addFields(
+        {
+          name: '📅 Summoning Date',
+          value: `<t:${Math.floor(new Date(createdAt || Date.now()).getTime() / 1000)}:F>`,
+          inline: true,
+        },
+        {
+          name: '🧠 Model',
+          value: `${model || 'N/A'}`,
+          inline: true,
+        },
+        {
+          name: '⭐ Traits',
+          value: traits || 'None',
+          inline: false,
+        }
+      )
+      .setImage(imageUrl)
+      .setTimestamp(new Date(updatedAt || Date.now()))
+      .setFooter({
+        text: `Profile of ${name}`,
+        iconURL: imageUrl,
+      });
+
+    // Optionally, add a link to the inner monologue thread
+    if (innerMonologueThreadId) {
+      avatarEmbed.addFields({
+        name: '🧵 Inner Monologue Thread',
+        value: `[View Thread](https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId})`,
+        inline: false,
+      });
+    }
+
+    // Send the embed via webhook
+    await webhook.send({
+      embeds: [avatarEmbed],
+      threadId: channel.isThread() ? channelId : undefined,
+      username: name.slice(0, 80), // Discord limits usernames to 80 characters
+      avatarURL: imageUrl,
+    });
+
+    console.log(`Sent avatar profile for ${name} via webhook to channel ${channelId}`);
+  } catch (error) {
+    console.error(`Failed to send avatar profile to channel ${channelId}: ${error.message}`);
+    // Optionally, log the error using your logger
+    // logger.error(`Failed to send avatar profile to channel ${channelId}: ${error.message}`);
+  }
+}
+
+
+
 /**
  * Sends a message via webhook with a custom username and avatar.
  * @param {Client} client - The Discord client instance.
@@ -110,6 +217,7 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
   if (!channelId || typeof channelId !== 'string') {
     throw new Error(`Invalid channel ID: ${channelId}`);
   }
+  let channelName = null;
 
   try {
     const channel = await client.channels.fetch(channelId);
@@ -125,8 +233,8 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
     }
 
     let webhook = await getOrCreateWebhook(client, targetChannel);
-
-    const chunks = chunkMessage(content);
+    
+    const chunks = chunkMessage(processMessageLinks(content));
     for (const chunk of chunks) {
         // Send to thread if needed, otherwise send to channel
         await webhook.send({
@@ -139,8 +247,9 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
      }
 
   } catch (error) {
-    console.error(`Webhook error for channel ${channelId}: ${error.message}`);
-    throw error;
+    console.error(error.message);
+    console.error(channelName, channelId);
+    logger.error(`Failed to send message to channel ${channelId} via webhook: ${error.message}`);
   }
 }
 
@@ -164,128 +273,5 @@ export async function getRecentMessages(client, channelId, limit = 10) {
   }
 }
 
-export function chunkMessage(message, chunkSize = 2000) {
-  if (!message) return [];
-  // Split the message into paragraphs based on double line breaks
-  const paragraphs = message.split(/\n\s*\n/);
-  const chunks = [];
-  let currentChunk = '';
-
-  for (const paragraph of paragraphs) {
-    const trimmedParagraph = paragraph.trim();
-
-    // Check if adding the paragraph exceeds the chunk size
-    if ((currentChunk + '\n\n' + trimmedParagraph).length <= chunkSize) {
-      if (currentChunk) {
-        currentChunk += '\n\n' + trimmedParagraph;
-      } else {
-        currentChunk = trimmedParagraph;
-      }
-    } else {
-      if (currentChunk) {
-        chunks.push(currentChunk);
-      }
-      // If the paragraph itself is larger than chunkSize, split it further
-      if (trimmedParagraph.length <= chunkSize) {
-        currentChunk = trimmedParagraph;
-      } else {
-        // Split the large paragraph into lines
-        const lines = trimmedParagraph.split('\n');
-        currentChunk = '';
-
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if ((currentChunk + '\n' + trimmedLine).length <= chunkSize) {
-            if (currentChunk) {
-              currentChunk += '\n' + trimmedLine;
-            } else {
-              currentChunk = trimmedLine;
-            }
-          } else {
-            if (currentChunk) {
-              chunks.push(currentChunk);
-            }
-            // If the line is still too big, split it into smaller chunks
-            if (trimmedLine.length <= chunkSize) {
-              currentChunk = trimmedLine;
-            } else {
-              const splitLine = trimmedLine.match(new RegExp(`.{1,${chunkSize}}`, 'g'));
-              chunks.push(...splitLine.slice(0, -1));
-              currentChunk = splitLine[splitLine.length - 1];
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (currentChunk) {
-    chunks.push(currentChunk);
-  }
-
-  return chunks;
-}
 
 
-/**
- * Sends a long message by chunking it if necessary.
- * @param {Client} client - The Discord client instance.
- * @param {string} channelId - The ID of the channel to send the message in.
- * @param {string} content - The content of the message.
- */
-export async function sendLongMessage(client, channelId, content) {
-  try {
-    const chunks = chunkMessage(content);
-    const channel = await client.channels.fetch(channelId);
-    if (!channel) throw new Error(`Channel with ID ${channelId} not found.`);
-
-    for (const chunk of chunks) {
-      await channel.send(chunk);
-    }
-
-    logger.info(`Sent long message to channel ${channelId}`);
-  } catch (error) {
-    logger.error(`Failed to send long message to channel ${channelId}: ${error.message}`);
-  }
-}
-
-/**
- * Sends a message to a specific thread.
- * @param {Client} client - The Discord client instance.
- * @param {string} threadId - The ID of the thread to send the message in.
- * @param {string} content - The content of the message.
- */
-export async function sendToThread(client, threadId, content) {
-  try {
-    const thread = await client.channels.fetch(threadId);
-    if (!thread || !thread.isThread()) {
-      throw new Error(`Thread with ID ${threadId} not found or is not a thread.`);
-    }
-
-    const channel = thread.parent;
-    if (!channel) throw new Error(`Parent channel for thread ${threadId} not found.`);
-
-    const webhooks = await channel.fetchWebhooks();
-    let webhook = webhooks.find((wh) => wh.owner.id === client.user.id);
-
-    if (!webhook) {
-      webhook = await channel.createWebhook({
-        name: 'Multi-Avatar Bot Webhook',
-        avatar: client.user.displayAvatarURL(),
-      });
-      logger.info(`Created new webhook for parent channel ${channel.id}`);
-    }
-
-    const chunks = chunkMessage(content);
-    for (const chunk of chunks) {
-      await webhook.send({
-        content: chunk,
-        threadId: thread.id,
-      });
-    }
-
-    logger.info(`Sent message to thread ${thread.id}`);
-  } catch (error) {
-    logger.error(`Failed to send message to thread ${threadId}: ${error.message}`);
-  }
-}

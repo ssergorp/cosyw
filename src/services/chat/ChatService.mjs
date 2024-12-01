@@ -191,7 +191,7 @@ export class ChatService {
   async getTopMentions(messages, avatars) {
     const mentions = new Map();
     for (const message of messages) {
-      const mentionedAvatars = avatars.filter(avatar => message.content.includes(avatar.name));
+      const mentionedAvatars = await this.avatarService.getMentionedAvatars(message.content);
       for (const avatar of mentionedAvatars) {
         if (mentions.has(avatar.id)) {
           mentions.set(avatar.id, mentions.get(avatar.id) + 1);
@@ -274,7 +274,7 @@ export class ChatService {
 
   async respondAsAvatar(channel, avatar, force = false) {
     // Validate channel and avatar
-    if (!channel?.id || !avatar?.id) {
+    if (!channel?.id) {
       this.logger.error('Invalid channel or avatar provided to respondAsAvatar');
       return;
     }
@@ -283,7 +283,7 @@ export class ChatService {
       this.logger.info(`Attempting to respond as avatar ${avatar.name} in channel ${channel.id} (force: ${force})`);
       let decision = true;
       try {
-        decision = await this.decisionMaker.shouldRespond(channel, avatar);
+        decision = await this.decisionMaker.shouldRespond(channel, avatar, this.client);
       } catch (error) {
         this.logger.error(`Error in decision maker: ${error.message}`);
       }
@@ -294,9 +294,9 @@ export class ChatService {
       if (shouldRespond) {
         this.logger.info(`${avatar.name} decided to respond in ${channel.id}`);
         await this.conversationHandler.sendResponse(channel, avatar);
-        this.updateLastActiveGuild(avatar.id, channel.guild.id);
+        this.updateLastActiveGuild(avatar._id, channel.guild.id);
         // Track the response in DecisionMaker
-        this.decisionMaker.trackResponse(channel.id, avatar.id);
+        this.decisionMaker.trackResponse(channel.id, avatar._id);
       }
 
     } catch (error) {

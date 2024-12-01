@@ -1,3 +1,5 @@
+import { sendAsWebhook } from "../discordService.mjs";
+
 const DECISION_MODEL = 'meta-llama/llama-3.2-1b-instruct';
 
 export class DecisionMaker {
@@ -33,7 +35,7 @@ export class DecisionMaker {
     return activeAvatars;
   }
 
-  async shouldRespond(channel, avatar) {
+  async shouldRespond(channel, avatar, client) {
     // Validate channel and avatar
     if (!channel || !channel.id || typeof channel.id !== 'string') {
       this.logger.error('Invalid channel provided to shouldRespond:', channel);
@@ -45,36 +47,43 @@ export class DecisionMaker {
     // calculate the percentage of messages that are from .bot
     const botMessageCount = channelMessages.filter(m => m.author.bot).size;
     const botMessagePercentage = botMessageCount / channelMessages.size;
-  
+
     const lastMessage = channelMessages.first();
 
-      // if the author username is the same as the avatar name, don't respond
-      if (lastMessage.author.username.toLowerCase() === avatar.name.toLowerCase()) {
-        return false;
-      }
-      const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
-                              (avatar.emoji && lastMessage.content.includes(avatar.emoji));
-      if (isAvatarMentioned) {
-        return !lastMessage.author.bot || Math.random() >  botMessagePercentage;
-      }
+    // if the author username is the same as the avatar name, don't respond
+    if (lastMessage.author.username.toLowerCase() === avatar.name.toLowerCase()) {
+      return false;
+    }
+    const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
+      (avatar.emoji && lastMessage.content.includes(avatar.emoji));
+    if (isAvatarMentioned) {
+      return !lastMessage.author.bot || Math.random() > botMessagePercentage;
+    }
 
     const avatarId = avatar.id || avatar._id.toString();
-    
+
     if (!avatarId || !avatar.name) {
       this.logger.error('DecisionMaker received avatar with missing id or name:', JSON.stringify(avatar, null, 2));
       return false;
     }
 
     try {
-        // Get recent messages for context
-        const messages = await channel.messages.fetch({ limit: 5 });
-        const context = messages.reverse().map(m => ({
-          role: m.author.bot ? 'assistant' : 'user',
-          content: `${m.author.username}: ${m.content}`
-        }));
+      // Get recent messages for context
+      const messages = await channel.messages.fetch({ limit: 5 });
+      const latestMessage = messages.first();
+      if (!latestMessage) {
+        return false;
+      }
+      if (latestMessage.author.bot && latestMessage.author.username.toLowerCase() === avatar.name.toLowerCase()) {
+        return false;
+      }
+      const context = messages.reverse().map(m => ({
+        role: m.author.bot ? 'assistant' : 'user',
+        content: `${m.author.username}: ${m.content}`
+      }));
 
-        const decision = await this.makeDecision(avatar, context);
-        return decision.decision === 'YES';
+      const decision = await this.makeDecision(avatar, context, client);
+      return decision.decision === 'YES';
 
     } catch (error) {
       this.logger.error(`Error in shouldRespond: ${error.message}`);
@@ -83,7 +92,7 @@ export class DecisionMaker {
   }
 
   avatarLastCheck = {};
-  async makeDecision(avatar, context) {
+  async makeDecision(avatar, context, client) {
 
     this.avatarLastCheck[avatar._id] = this.avatarLastCheck[avatar._id] || {
       decision: 'NO',
@@ -118,16 +127,25 @@ export class DecisionMaker {
 
 
     try {
-      
-    const decisionPrompt = [ 
-      ...context, { role: 'user', content: `As ${avatar.name}, analyze the conversation with a haiku, and decide whether you should respond, after the haiku reply "YES" if it indicates you should respond.F` }
-    ];
+
+      const decisionPrompt = [
+        ...context, { role: 'user', content: `As ${avatar.name}, analyze the conversation with a haiku, and decide whether you should respond, after the haiku reply "YES" if it indicates you should respond.F` }
+      ];
       const aiResponse = await this.aiService.chat(decisionPrompt, { model: DECISION_MODEL });
-      
+
       console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
       const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'YES' } : { decision: 'NO' };
       decision.reason = aiLines.slice(0, -1).join('\n').trim();
+
+      // Post the haiku to the avatars inner monologue
+      if (avatar.innerMonologueChannel) {
+        sendAsWebhook(
+          client, avatar.innerMonologueChannel,
+          aiLines.slice(0, -1).join('\n').trim(),
+          avatar.name, avatar.imageUrl
+        );
+      }
 
       if (!decision.decision || !decision.reason) {
         this.logger.warn(`Invalid decision format from AI for avatar ${avatar.id}`);

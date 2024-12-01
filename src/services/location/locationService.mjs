@@ -2,6 +2,7 @@ import Fuse from 'fuse.js';
 import { OpenRouterService } from '../openrouterService.mjs';
 import { uploadImage } from '../s3imageService.mjs';
 import { sendAsWebhook } from '../discordService.mjs';
+import { MongoClient } from 'mongodb';
 import Replicate from 'replicate';
 import fs from 'fs/promises';
 
@@ -26,7 +27,20 @@ export class LocationService {
     this.locationMessages = new Map(); // locationId -> {count: number, messages: Array}
     this.SUMMARY_THRESHOLD = 100; // Messages before generating summary
     this.MAX_STORED_MESSAGES = 50; // Keep last 50 messages for context
+
+    this.db = null;
+    this.initDatabase();
   }
+
+  async initDatabase() {
+    try {
+      const client = await MongoClient.connect(process.env.MONGO_URI);
+      this.db = client.db('cosyworld2');
+    } catch (error) {
+      console.error('Failed to connect to MongoDB:', error);
+    }
+  }
+
   // Function to download image
   async downloadImage(url) {
     try {
@@ -47,7 +61,7 @@ export class LocationService {
       "immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f",
       {
         input: {
-          prompt: `MRQ ${locationName} holographic black neon location ${description} MRQ`,
+          prompt: `MRQ ${locationName} holographic neon dark watercolor ${description} MRQ`,
           model: "dev",
           lora_scale: 1,
           num_outputs: 1,
@@ -68,6 +82,20 @@ export class LocationService {
     const filename = `./images/location_${Date.now()}.png`;
     await fs.mkdir('./images', { recursive: true });
     await fs.writeFile(filename, imageBuffer);
+
+    if (this.db) {
+      await this.db.collection('locations').updateOne(
+        { name: locationName },
+        { 
+          $set: { 
+            imageUrl: await uploadImage(filename),
+            updatedAt: new Date()
+          }
+        },
+        { upsert: true }
+      );
+    }
+
     return await uploadImage(filename);
   }
 
@@ -117,8 +145,24 @@ export class LocationService {
       const channels = await this.getAllLocations(guild);
       const fuse = new Fuse(channels, this.fuseOptions);
       
+      let cleanLocationName = await this.aiService.chat([
+        { role: 'system', content: 'Generate a fantasy location name.' },
+        { role: 'user', content: `Clean up or revise this location name:
+
+        ${locationName}
+
+        Ensure it is less than 100 characters, and suitable for a fantasy setting.
+        ONLY return the revised name, without any additional text. If the name is already suitable, return it as is.
+        ` }]);
+
+      // trim by words
+      const words = cleanLocationName.split(' ');
+      while (words.join(' ').length > 100) { words.pop(); }
+
+      cleanLocationName = (words.join(' ')).trim();
+      
       // Try to find existing location
-      const matches = fuse.search(locationName);
+      const matches = fuse.search(cleanLocationName);
       if (matches.length > 0) {
         return matches[0].item;
       }
@@ -138,14 +182,14 @@ export class LocationService {
       // Generate location content
       const locationDescription = await this.aiService.chat([
         { role: 'system', content: 'Generate a brief, atmospheric description of this fantasy location.' },
-        { role: 'user', content: `Describe ${locationName} in 2-3 sentences.` }
+        { role: 'user', content: `Describe ${cleanLocationName} in 2-3 sentences.` }
       ]);
 
-      const locationImage = await this.generateLocationImage(locationName, locationDescription);
+      const locationImage = await this.generateLocationImage(cleanLocationName, locationDescription);
 
       // Create thread in the source channel
       const thread = await parentChannel.threads.create({
-        name: locationName,
+        name: cleanLocationName,
         autoArchiveDuration: 60
       });
 
@@ -153,7 +197,7 @@ export class LocationService {
       await thread.send({ 
         files: [{ 
           attachment: locationImage,
-          name: `${locationName.toLowerCase().replace(/\s+/g, '_')}.png`
+          name: `${cleanLocationName.toLowerCase().replace(/\s+/g, '_')}.png`
         }]
       });
 
@@ -166,6 +210,22 @@ export class LocationService {
         locationName,
         locationImage
       );
+
+      if (this.db) {
+        await this.db.collection('locations').updateOne(
+          { channelId: thread.id },
+          { 
+            $set: {
+              name: locationName,
+              description: evocativeDescription,
+              imageUrl: locationImage,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }
+          },
+          { upsert: true }
+        );
+      }
 
       return {
         id: thread.id,

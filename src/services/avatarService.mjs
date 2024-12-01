@@ -3,7 +3,6 @@
 import Replicate from 'replicate';
 // import { OllamaService as AIService } from './ollamaService.mjs';
 import { OpenRouterService as AIService } from './openrouterService.mjs';
-import https from 'https';
 import { MongoClient, ObjectId } from 'mongodb';
 import process from 'process';
 import winston from 'winston';
@@ -95,7 +94,11 @@ export class AvatarGenerationService {
     }
   }
 
+  avatarCache = [];
   async getAllAvatars(includeStatus = 'alive') {
+    if (this.avatarCache.length > 0) {
+      return this.avatarCache;
+    }
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
       const query = {
@@ -162,6 +165,10 @@ export class AvatarGenerationService {
     }
   }
 
+  async getMentionedAvatars(message) {
+    const avatars = await this.getAllAvatars();
+    return avatars.filter(avatar => message.includes(avatar.name));
+  }
 
   async getAvatarById(id) {
     try {
@@ -400,6 +407,7 @@ export class AvatarGenerationService {
       }
 
       if (updateResult.modifiedCount === 1) {
+        this.avatarCache = [];
         this.logger.info(`Avatar ID ${avatar._id} updated successfully.`);
         // Fetch the updated document correctly using ObjectId
         const updatedAvatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: avatar._id });
@@ -455,13 +463,13 @@ export class AvatarGenerationService {
       }
 
       // Proceed with avatar creation using either Arweave data or original prompt
-      return await this._createAvatarWithPrompt(prompt, systemPrompt, data);
+      return await this._createAvatarWithPrompt(prompt, data);
     } catch (error) {
       throw new Error(`Avatar creation failed: ${error.message}`);
     }
   }
 
-  async _createAvatarWithPrompt(prompt, systemPrompt, data) {
+  async _createAvatarWithPrompt(prompt, data) {
 
     if (!this.db) {
       this.logger.error('Database is not connected. Cannot create avatar.');

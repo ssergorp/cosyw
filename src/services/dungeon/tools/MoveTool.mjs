@@ -1,7 +1,6 @@
 import { BaseTool } from './BaseTool.mjs';
 import { LocationService } from '../../location/locationService.mjs';
 import { sendAsWebhook } from '../../discordService.mjs';
-import { processMessageLinks } from '../../utils/linkProcessor.mjs';
 
 export class MoveTool extends BaseTool {
   constructor(dungeonService) {
@@ -74,13 +73,7 @@ export class MoveTool extends BaseTool {
         }
         try {
           const departureMessage = await this.locationService.generateDepartureMessage(avatar, currentLocation, newLocation);
-          await sendAsWebhook(
-            this.dungeonService.client,
-            currentLocation.channel.id,
-            departureMessage,
-            currentLocation.name || 'Unknown Location',
-            currentLocation.imageUrl
-          );
+          return departureMessage;
         } catch (error) {
           console.error('Error sending departure message:', error);
         }
@@ -93,26 +86,20 @@ export class MoveTool extends BaseTool {
       try {
         const arrivalMessage = await this.locationService.generateAvatarResponse(avatar, newLocation);
         // Process any user/channel mentions in the message
-        const processedMessage = processMessageLinks(
-          `*Moved to <#${newLocation.channel.id}>*\n\n${arrivalMessage}`, 
-          this.dungeonService.client
-        );
-
-        avatar.channelId = newLocation.channel.id;
-        await this.dungeonService.avatarService.updateAvatar(avatar);
-        
         await sendAsWebhook(
           this.dungeonService.client,
           newLocation.channel.id,
-          processedMessage,
-          avatar.name, // Send as avatar instead of location
-          avatar.imageUrl // Use avatar's image
-        );
+          arrivalMessage,
+          avatar.name,
+          avatar.imageUrl);
+
+        avatar.channelId = newLocation.channel.id;
+        await this.dungeonService.avatarService.updateAvatar(avatar);
       } catch (error) {
         console.error('Error sending arrival message:', error);
       }
 
-      return `${avatar.name} moved to ${newLocation.name}!`;
+      return `${avatar.name} moved to ${newLocation.channel.name}!`;
     } catch (error) {
       console.error('Error in MoveTool execute:', error);
       return "Failed to move: " + error.message;

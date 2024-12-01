@@ -10,7 +10,7 @@ export class AvatarManager {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       return await db.collection('avatars').findOne({ avatarId });
     } finally {
       await client.close();
@@ -21,7 +21,7 @@ export class AvatarManager {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       await db.collection('avatars').updateOne(
         { avatarId: avatar.avatarId },
         { $set: avatar },

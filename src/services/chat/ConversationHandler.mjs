@@ -135,7 +135,7 @@ Describe:
     try {
       const client = new MongoClient(process.env.MONGO_URI);
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       await db.collection('narratives').insertOne({
         threadId: thread.id,
         guildId: thread.guildId,
@@ -155,7 +155,7 @@ Describe:
     try {
       const client = new MongoClient(process.env.MONGO_URI);
       await client.connect();
-      const db = client.db('discord');
+      const db = client.db(process.env.MONGO_DB_NAME);
       const lastNarrative = await db.collection('narratives')
         .findOne({ avatarId }, { sort: { timestamp: -1 } });
       await client.close();
@@ -232,6 +232,11 @@ Describe:
         model: avatar.model
       });
 
+      if (!response) {
+        this.logger.error(`Empty response for ${avatar.name}`);
+        return;
+      }
+
       // if the response starts with the avatar name, remove it
       if (response.startsWith(avatar.name + ':')) {
         response = response.replace(avatar.name + ':', '').trim();
@@ -262,7 +267,7 @@ Describe:
           this.client,
           channel.id,
           commandResults.join('\n'),
-          avatar.name + ' 🛠️',
+          '🛠️ ' + avatar.name,
           avatar.imageUrl
         );
 
