@@ -41,11 +41,13 @@ export class DecisionMaker {
     }
 
     // get the latest few messages in the channel
-    const channelMessages = await channel.messages.fetch({ limit: 18 });
+    const channelMessages = await channel.messages.fetch({ limit: 8 });
+    // calculate the percentage of messages that are from .bot
+    const botMessageCount = channelMessages.filter(m => m.author.bot).size;
+    const botMessagePercentage = botMessageCount / channelMessages.size;
+  
     const lastMessage = channelMessages.first();
 
-    // If last message is from a bot and mentions the avatar
-    if (lastMessage?.author.bot) {
       // if the author username is the same as the avatar name, don't respond
       if (lastMessage.author.username.toLowerCase() === avatar.name.toLowerCase()) {
         return false;
@@ -53,20 +55,8 @@ export class DecisionMaker {
       const isAvatarMentioned = lastMessage.content.toLowerCase().includes(avatar.name.toLowerCase()) ||
                               (avatar.emoji && lastMessage.content.includes(avatar.emoji));
       if (isAvatarMentioned) {
-        return true;
+        return !lastMessage.author.bot || Math.random() >  botMessagePercentage;
       }
-    }
-
-    // calculate the percentage of messages that are from .bot
-    const botMessageCount = channelMessages.filter(m => m.author.bot).size;
-    const botMessagePercentage = (botMessageCount / channelMessages.size) - 0.01;
-
-    // randomly decide whether to respond based on the bot message percentage
-    const shouldRespond = lastMessage.author.bot ? Math.random() > botMessagePercentage: true;
-    if (!shouldRespond) {
-      console.log('Bot message percentage:', botMessagePercentage);
-      return false;
-    }
 
     const avatarId = avatar.id || avatar._id.toString();
     
@@ -93,7 +83,7 @@ export class DecisionMaker {
   }
 
   avatarLastCheck = {};
-  async makeDecision(avatar, context, isBackground = false) {
+  async makeDecision(avatar, context) {
 
     this.avatarLastCheck[avatar._id] = this.avatarLastCheck[avatar._id] || {
       decision: 'NO',
@@ -126,32 +116,14 @@ export class DecisionMaker {
       return { decision: 'YES', reason: 'Last message mentioned the avatar emoji.' };
     }
 
-    const decisionPrompt = [
-      ...context,
-      {
-        role: 'user',
-        content: `As ${avatar.name}, analyze the conversation.
-        Describe your thought process and decide whether to respond, and 
-
-        Consider:
-        1. Are you mentioned (by name or emoji)?
-        2. Is the topic relevant to your interests/personality?
-        3. Would your input be valuable?
-        4. Is this a good time to speak?
-        5. Have you spoken too recently?
-
-        
-        Based on these factors, should you respond?
-        
-        Respond with a Haiku containing your answer (YES or NO) in the final line, and repeat your answer alone on a new line after the haiku.
-        `
-
-        
-      }
-    ];
 
     try {
+      
+    const decisionPrompt = [ 
+      ...context, { role: 'user', content: `As ${avatar.name}, analyze the conversation with a haiku, and decide whether you should respond, after the haiku reply "YES" if it indicates you should respond.F` }
+    ];
       const aiResponse = await this.aiService.chat(decisionPrompt, { model: DECISION_MODEL });
+      
       console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
       const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'YES' } : { decision: 'NO' };

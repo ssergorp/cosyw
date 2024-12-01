@@ -166,6 +166,27 @@ export class ChatService {
     }
   }
 
+  async getLastMentionedAvatars(channelId) {
+      // get the avatars that are in the channel
+      const avatars = await this.avatarService.getAvatarsInChannel(channelId);
+      // get the recent messages
+      const messages = await this.getRecentMessages(channelId);
+
+      // for each message, check if any avatars are mentioned
+      const mentionedAvatars = new Set();
+      for (const message of messages) {
+        for (const avatar of avatars) {
+          if (message.content.includes(avatar.name)) {
+            mentionedAvatars.add(avatar.id);
+          }
+        }
+        if (mentionedAvatars.size >= 3) {
+          break;
+        }
+      }
+      return [...mentionedAvatars];
+  }
+
   // find the 12 most mentioned 
   async getTopMentions(messages, avatars) {
     const mentions = new Map();
@@ -185,12 +206,13 @@ export class ChatService {
       return avatars
         .sort(() => Math.random() - 0.5)
         .slice(0, 12)
-        .map(avatar => [avatar.id, 0]);
+        .map(avatar => avatar.id);
     }
 
     return [...mentions.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 12);
+      .slice(0, 12)
+      .map(([avatarId]) => avatarId);
   }
 
   // get the most recent limit messages prior to timestamp if provided or now
@@ -226,7 +248,7 @@ export class ChatService {
     topAvatars.splice(6);
 
     // respond as each of the top 6 avatars
-    for (const [avatarId] of topAvatars) {
+    for (const avatarId of topAvatars) {
       const avatar = avatars.find(a => a.id === avatarId);
       if (!avatar) {
         this.logger.error(`Avatar ${avatarId} not found`);
@@ -239,7 +261,7 @@ export class ChatService {
       }
 
       try {
-        await this.respondAsAvatar(this.client, channel, avatar, true);
+        await this.respondAsAvatar(channel, avatar, true);
       } catch (error) {
         this.logger.error(`Error responding as avatar ${avatar.name}: ${error.message}`);
       }
@@ -250,7 +272,7 @@ export class ChatService {
     setTimeout(() => this.UpdateActiveAvatars(), 60000);
   }
 
-  async respondAsAvatar(client, channel, avatar, force = false) {
+  async respondAsAvatar(channel, avatar, force = false) {
     // Validate channel and avatar
     if (!channel?.id || !avatar?.id) {
       this.logger.error('Invalid channel or avatar provided to respondAsAvatar');

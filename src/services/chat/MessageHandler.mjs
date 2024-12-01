@@ -47,28 +47,31 @@ export class MessageHandler {
       // Get recent messages directly from database
       const messages = await this.chatService.getRecentMessages(channelId);
       const topMentions = await this.chatService.getTopMentions(messages, avatarsInChannel);
+      const recentAvatars = await this.chatService.getLastMentionedAvatars(channelId);
 
       // shuffle the avatars
       topMentions.sort(() => Math.random() - 0.5);
 
-      const [avatarId, count] = topMentions[0];
-      // Skip if already processing this avatar for this channel
-      const processingKey = `${channelId}-${avatarId}`;
-      if (this.processingMessages.has(processingKey)) {
-        this.logger.debug(`Skipping already processing response: ${processingKey}`);
-        return;
-      }
-
-      try {
-        this.processingMessages.add(processingKey);
-        const avatar = await this.avatarService.getAvatarById(avatarId);
-        if (avatar) {
-          const channel = await this.chatService.client.channels.fetch(channelId);
-          await this.chatService.conversationHandler.sendResponse(channel, avatar, count > 1);
+      [...recentAvatars, ...topMentions].slice(1).forEach(async (avatarId) => {
+        // Skip if already processing this avatar for this channel
+        const processingKey = `${channelId}-${avatarId}`;
+        if (this.processingMessages.has(processingKey)) {
+          this.logger.debug(`Skipping already processing response: ${processingKey}`);
+          return;
         }
-      } finally {
-        this.processingMessages.delete(processingKey);
-      }
+
+        try {
+          this.processingMessages.add(processingKey);
+          const avatar = await this.avatarService.getAvatarById(avatarId);
+          if (avatar) {
+            const channel = await this.chatService.client.channels.fetch(channelId);
+            await this.chatService.respondAsAvatar(channel, avatar);
+          }
+        } finally {
+          this.processingMessages.delete(processingKey);
+        }
+      });
+
 
     } catch (error) {
       this.logger.error(`Error processing channel ${channelId}:`, error);

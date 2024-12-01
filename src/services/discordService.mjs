@@ -131,7 +131,7 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
         // Send to thread if needed, otherwise send to channel
         await webhook.send({
           content: chunk,
-          username: username,
+          username: username.slice(0, 80),
           avatarURL: avatarUrl,
           threadId: channel.isThread() ? channelId : undefined
         });

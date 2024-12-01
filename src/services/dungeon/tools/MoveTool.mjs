@@ -69,6 +69,9 @@ export class MoveTool extends BaseTool {
 
       // Handle departure message
       if (currentLocation?.channel) {  // Add null check and channel check
+        if (currentLocation.channel.id === newLocation.channel.id) {
+          return "You're already there!";
+        }
         try {
           const departureMessage = await this.locationService.generateDepartureMessage(avatar, currentLocation, newLocation);
           await sendAsWebhook(
