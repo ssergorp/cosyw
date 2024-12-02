@@ -249,7 +249,7 @@ export class ChatService {
     }
 
     // schedule the next update
-    setTimeout(() => this.UpdateActiveAvatars(), 60000);
+    setTimeout(() => this.UpdateActiveAvatars(), 15 * 60000);
   }
 
   async respondAsAvatar(channel, avatar, force = false) {

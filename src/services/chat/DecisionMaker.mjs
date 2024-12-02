@@ -186,7 +186,7 @@ export class DecisionMaker {
 
       console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
-      const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('NO') !== -1) ? { decision: 'NO' } : { decision: 'YES' };
+      const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'NO' } : { decision: 'YES' };
       decision.reason = aiLines.slice(0, -1).join('\n').trim();
 
       // Post the haiku to the avatars inner monologue

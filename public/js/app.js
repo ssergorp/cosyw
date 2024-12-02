@@ -65,6 +65,15 @@ function AvatarDetailModal({ avatar, onClose }) {
 
   if (!avatar) return null;
 
+  function generateProgressBar(value, increment, emoji) {
+    return emoji.repeat(Math.floor(value / increment));
+  }
+
+  const { attack, defense, hp } = dungeonStats;
+  const attackBar = generateProgressBar(attack, 5, '⚔️');
+  const defenseBar = generateProgressBar(defense, 5, '🛡️');
+  const hpBar = generateProgressBar(hp, 33, '❣️'); // Assuming max HP is 1000
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
@@ -81,9 +90,7 @@ function AvatarDetailModal({ avatar, onClose }) {
               <p className="text-gray-500">Created: {formatDate(avatar.createdAt)}</p>
               {/* Display Dungeon Stats */}
               <div className="mt-2">
-                <p className="text-gray-300">Attack: {dungeonStats.attack}</p>
-                <p className="text-gray-300">Defense: {dungeonStats.defense}</p>
-                <p className="text-gray-300">HP: {dungeonStats.hp}</p>
+                <p className="text-gray-300">{attackBar}|{defenseBar}|{hpBar}</p>
               </div>
             </div>
           </div>
@@ -168,12 +175,6 @@ function AvatarCard({ avatar, onSelect }) {
           </div>
           <p className="text-gray-400">Messages: {avatar.messageCount}</p>
           <p className="text-gray-400">{renderLives()}</p>
-          {/* Display Dungeon Stats */}
-          <div className="mt-1">
-            <p className="text-gray-300 text-sm">Attack: {avatar.attack}</p>
-            <p className="text-gray-300 text-sm">Defense: {avatar.defense}</p>
-            <p className="text-gray-300 text-sm">HP: {avatar.hp}</p>
-          </div>
           <p className="text-sm text-gray-500">
             Active: {new Date(avatar.lastMessage).toLocaleDateString()}
           </p>
@@ -224,7 +225,7 @@ function CombatLog() {
             </span>
           </div>
           <div className="text-sm text-gray-500">
-            Location: #{entry.channelId}
+            {entry.actor}
           </div>
         </div>
       ))}

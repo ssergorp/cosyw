@@ -23,7 +23,7 @@ export class ConversationHandler {
 
     // Add bot message handling
     this.botMessageQueue = new Map(); // channelId -> [{avatar, message, timestamp}]
-    this.BOT_RESPONSE_INTERVAL = 30000; // Check every 30 seconds
+    this.BOT_RESPONSE_INTERVAL = 5 * 60 * 1000; // Check every five minutes
     this.BOT_RESPONSE_CHANCE = 0.3; // 30% chance to respond to bot messages
 
     // Update cooldown times

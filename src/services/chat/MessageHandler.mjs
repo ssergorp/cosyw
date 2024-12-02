@@ -45,9 +45,10 @@ export class MessageHandler {
 
       // Get recent messages
       const messages = await this.chatService.getRecentMessagesFromDatabase(channelId);
+      const latestMessage = messages[messages.length - 1];
 
       const recentAvatars = await this.chatService.getLastMentionedAvatars(messages, avatarsInChannel);
-
+      
       recentAvatars.forEach(async (avatarId) => {
         const avatar = await this.avatarService.getAvatarById(avatarId);
         // Skip if already processing this avatar for this channel
@@ -62,7 +63,7 @@ export class MessageHandler {
           const avatar = await this.avatarService.getAvatarById(avatarId);
           if (avatar) {
             const channel = await this.chatService.client.channels.fetch(channelId);
-            await this.chatService.respondAsAvatar(channel, avatar, true);
+            await this.chatService.respondAsAvatar(channel, avatar, !latestMessage.author.bot);
           }
         } finally {
           this.processingMessages.delete(processingKey);
