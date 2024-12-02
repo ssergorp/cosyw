@@ -16,9 +16,9 @@ export class MessageProcessor {
       }
       
       const activeAvatars = avatars
-        .filter(avatar => avatar && typeof avatar === 'object' && (avatar.id || avatar._id))
+        .filter(avatar => avatar && typeof avatar === 'object' && (avatar._id || avatar._id))
         .map(avatar => {
-          const id = avatar.id || avatar._id.toString();
+          const id = avatar._id || avatar._id;
           
           // Create normalized avatar object
           return {
@@ -33,7 +33,7 @@ export class MessageProcessor {
           };
         })
         .filter(avatar => {
-          if (!avatar.id || !avatar.name) {
+          if (!avatar._id || !avatar.name) {
             console.error('Invalid avatar data after normalization:', JSON.stringify(avatar, null, 2));
             return false;
           }

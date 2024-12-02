@@ -1,4 +1,3 @@
-
 export function processMessageLinks(message, client) {
   if (!message) return message;
 

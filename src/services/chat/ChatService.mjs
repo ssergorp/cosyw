@@ -143,7 +143,7 @@ export class ChatService {
   // Core service methods
   async checkMessages() {
     const avatars = await this.messageProcessor.getActiveAvatars();
-    const validAvatars = avatars.filter(avatar => avatar.id && avatar.name);
+    const validAvatars = avatars.filter(avatar => avatar._id && avatar.name);
 
     if (validAvatars.length !== avatars.length) {
       this.logger.warn(`${avatars.length - validAvatars.length} avatars were excluded due to missing 'id' or 'name'.`);
@@ -151,33 +151,13 @@ export class ChatService {
     await this.dungeonProcessor.checkPendingActions();
   }
 
-  async getRecentMessages(channelId) {
-    try {
-      const messages = await this.db.collection('messages')
-        .find({ channelId })
-        .sort({ timestamp: -1 })
-        .limit(20)
-        .toArray();
-
-      return messages.reverse();
-    } catch (error) {
-      this.logger.error(`Failed to fetch recent messages for channel ${channelId}:`, error);
-      return [];
-    }
-  }
-
-  async getLastMentionedAvatars(channelId) {
-      // get the avatars that are in the channel
-      const avatars = await this.avatarService.getAvatarsInChannel(channelId);
-      // get the recent messages
-      const messages = await this.getRecentMessages(channelId);
-
+  async getLastMentionedAvatars(messages, avatars) {
       // for each message, check if any avatars are mentioned
       const mentionedAvatars = new Set();
       for (const message of messages) {
         for (const avatar of avatars) {
           if (message.content.includes(avatar.name)) {
-            mentionedAvatars.add(avatar.id);
+            mentionedAvatars.add(avatar._id);
           }
         }
         if (mentionedAvatars.size >= 3) {
@@ -193,26 +173,26 @@ export class ChatService {
     for (const message of messages) {
       const mentionedAvatars = await this.avatarService.getMentionedAvatars(message.content);
       for (const avatar of mentionedAvatars) {
-        if (mentions.has(avatar.id)) {
-          mentions.set(avatar.id, mentions.get(avatar.id) + 1);
+        if (mentions.has(avatar._id)) {
+          mentions.set(avatar._id, mentions.get(avatar._id) + 1);
         } else {
-          mentions.set(avatar.id, 1);
+          mentions.set(avatar._id, 1);
         }
       }
     }
 
-    // if there are no mentions, select a dozen random avatars
+    // if there are no mentions, select a hundred random avatars
     if (mentions.size === 0) {
       return avatars
         .sort(() => Math.random() - 0.5)
         .slice(0, 12)
-        .map(avatar => avatar.id);
+        .map(avatar => avatar._id);
     }
 
     return [...mentions.entries()]
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => a[1] - b[1])
       .slice(0, 12)
-      .map(([avatarId]) => avatarId);
+      .map(([_id]) => _id);
   }
 
   // get the most recent limit messages prior to timestamp if provided or now
@@ -238,7 +218,7 @@ export class ChatService {
 
   async UpdateActiveAvatars() {
     const avatars = await this.avatarService.getAllAvatars();
-    const messages = await this.getRecentMessagesFromDatabase(null, 1000, Date.now());
+    const messages = await this.getRecentMessagesFromDatabase(null, 100);
     const topAvatars = await this.getTopMentions(messages, avatars);
 
     // shuffle the avatars
@@ -261,7 +241,7 @@ export class ChatService {
       }
 
       try {
-        await this.respondAsAvatar(channel, avatar, true);
+        await this.respondAsAvatar(channel, avatar, false);
       } catch (error) {
         this.logger.error(`Error responding as avatar ${avatar.name}: ${error.message}`);
       }

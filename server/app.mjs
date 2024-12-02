@@ -4,7 +4,7 @@ import { MongoClient } from 'mongodb';
 import models from '../src/models.config.mjs';
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3080;
 
 app.use(cors());
 app.use(express.json());
@@ -44,6 +44,11 @@ const calculateTier = (avatar) => {
   const rarity = getModelRarity(avatar.model);
   return rarityToTier[rarity] || 'U';
 };
+
+// Add escapeRegExp function to sanitize avatar names for regex
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escapes special characters
+}
 
 // API Routes
 app.get('/api/leaderboard', async (req, res) => {
@@ -88,12 +93,9 @@ app.get('/api/leaderboard', async (req, res) => {
             }
           }
         }
-      }
-    ];
-
-    // Get avatars first to filter by tier if needed
-    if (tierFilter) {
-      pipeline.push({
+      },
+      // Always lookup avatars
+      {
         $lookup: {
           from: 'avatars',
           let: { name: '$originalName' },
@@ -101,20 +103,43 @@ app.get('/api/leaderboard', async (req, res) => {
             {
               $match: {
                 $expr: {
-                  $regexMatch: {
-                    input: '$name',
-                    regex: '$$name',
-                    options: 'i'
-                  }
+                  $eq: [
+                    { $strcasecmp: ['$name', '$$name'] }, 0
+                  ]
                 }
               }
-            }
+            },
+            { $limit: 1 }
           ],
           as: 'avatarInfo'
         }
-      });
+      },
+      // Always unwind avatarInfo
+      {
+        $unwind: {
+          path: '$avatarInfo',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      // Add dungeon stats lookup
+      {
+        $lookup: {
+          from: 'dungeon_stats',
+          localField: 'avatarInfo._id',
+          foreignField: 'avatarId',
+          as: 'dungeonStats'
+        }
+      },
+      {
+        $unwind: {
+          path: '$dungeonStats',
+          preserveNullAndEmptyArrays: true
+        }
+      }
+    ];
 
-      // Filter by tier
+    // Add tier filtering if needed
+    if (tierFilter) {
       if (tierFilter === 'U') {
         pipeline.push({
           $match: {
@@ -171,30 +196,35 @@ app.get('/api/leaderboard', async (req, res) => {
 
     // Get avatar details for the paginated results
     const avatarDetailsArray = await Promise.all(avatarsToReturn.map(async (stat) => {
-      const avatar = await db.collection('avatars').findOne({ 
-        name: { $regex: new RegExp(`^${stat.originalName}$`, 'i') }
-      });
-      
+      const avatar = stat.avatarInfo;
+
       if (!avatar) return null;
 
-      const lastReflection = await db.collection('reflections')
-        .findOne(
-          { avatarId: avatar._id.toString() },
-          { 
-            sort: { timestamp: -1 },
-            projection: { reflectionContent: 1, timestamp: 1 }
-          }
-        );
+      // Re-add fetching lastReflection with escaped name
+      const escapedName = escapeRegExp(stat.originalName);
+      const lastReflection = await db.collection('reflections').findOne(
+        { name: { $regex: `^${escapedName}$`, $options: 'i' } }, // Case-insensitive exact match
+        { 
+          sort: { timestamp: -1 },
+          projection: { reflectionContent: 1, timestamp: 1 }
+        }
+      );
+
+      // Get dungeon stats
+      const dungeonStats = stat.dungeonStats || { attack: 0, defense: 0, hp: 0 };
 
       return {
-        _id: avatar._id.toString(),
         ...avatar,
         messageCount: stat.messageCount,
         lastMessage: stat.lastMessage,
         recentMessages: stat.recentMessages.slice(0, 5),
         lastReflection: lastReflection?.reflectionContent || null,
         lastReflectionTime: lastReflection?.timestamp || null,
-        tier: calculateTier(avatar)  // Changed to use model rarity
+        tier: calculateTier(avatar),  // Changed to use model rarity
+        lives: avatar.lives, // Include lives
+        attack: dungeonStats.attack || 0,
+        defense: dungeonStats.defense || 0,
+        hp: dungeonStats.hp || 0
       };
     }));
 
@@ -222,17 +252,67 @@ app.get('/api/avatar/:id/reflections', async (req, res) => {
       throw new Error('Database not connected');
     }
 
+    const avatarId = req.params.id;
+
+    // Fetch reflections
     const reflections = await db.collection('reflections')
-      .find({ avatarId: req.params.id })
+      .find({ avatarId })
       .sort({ timestamp: -1 })
       .limit(5)
       .toArray();
 
-    res.json(reflections);
+    // Fetch dungeon_stats
+    const dungeonStats = await db.collection('dungeon_stats').findOne(
+      { avatarId },
+      { projection: { attack: 1, defense: 1, hp: 1 } }
+    );
+
+    res.json({
+      reflections,
+      dungeonStats: dungeonStats || { attack: 0, defense: 0, hp: 0 }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
   // Remove the finally block that closes the connection
+});
+
+// Restore the /api/dungeon/log endpoint
+app.get('/api/dungeon/log', async (req, res) => {
+  try {
+    // Use the established db connection
+    if (!db) {
+      throw new Error('Database not connected');
+    }
+
+    const combatLog = await db.collection('dungeon_log')
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .toArray();
+
+    // Enrich combat log with avatar details
+    const enrichedLog = await Promise.all(combatLog.map(async (entry) => {
+      // Escape the actor's name to prevent regex issues
+      const escapedActor = escapeRegExp(entry.actor);
+      const avatar = await db.collection('avatars').findOne(
+        { name: { $regex: `^${escapedActor}$`, $options: 'i' } }, // Case-insensitive exact match
+        { projection: { name: 1, lives: 1 } }
+      );
+
+      return {
+        ...entry,
+        avatarName: avatar ? avatar.name : entry.actor,
+        avatarLives: avatar?.lives || 3, // Default to 3 lives if not found
+        locationName: entry.target
+      };
+    }));
+
+    res.json(enrichedLog);
+  } catch (error) {
+    console.error('Error fetching combat log:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Handle server shutdown to close MongoDB connection

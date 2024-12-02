@@ -6,7 +6,7 @@ export class MessageHandler {
     this.avatarService = avatarService;
     this.logger = logger;
     this.RECENT_MESSAGES_CHECK = 10;
-    this.PROCESS_INTERVAL = 10000; // 10 seconds
+    this.PROCESS_INTERVAL = 3 * 10000; // 30 seconds
     this.ACTIVE_CHANNEL_WINDOW = 5 * 60 * 1000; // 5 minutes
     this.db = chatService.db;
     this.messagesCollection = this.db.collection('messages');
@@ -41,20 +41,18 @@ export class MessageHandler {
     try {
       // Get avatars in channel
       const avatarsInChannel = await this.avatarService.getAvatarsInChannel(channelId);
-
       if (!avatarsInChannel.length) return;
 
-      // Get recent messages directly from database
-      const messages = await this.chatService.getRecentMessages(channelId);
-      const topMentions = await this.chatService.getTopMentions(messages, avatarsInChannel);
-      const recentAvatars = await this.chatService.getLastMentionedAvatars(channelId);
+      // Get recent messages
+      const messages = await this.chatService.getRecentMessagesFromDatabase(channelId);
 
-      // shuffle the avatars
-      topMentions.sort(() => Math.random() - 0.5);
+      const recentAvatars = await this.chatService.getLastMentionedAvatars(messages, avatarsInChannel);
 
-      [...recentAvatars, ...topMentions].slice(1).forEach(async (avatarId) => {
+      recentAvatars.forEach(async (avatarId) => {
+        const avatar = await this.avatarService.getAvatarById(avatarId);
         // Skip if already processing this avatar for this channel
-        const processingKey = `${channelId}-${avatarId}`;
+        const processingKey = `${channelId}-${avatar._id}`;
+        console.log(processingKey);
         if (this.processingMessages.has(processingKey)) {
           this.logger.debug(`Skipping already processing response: ${processingKey}`);
           return;
@@ -65,7 +63,7 @@ export class MessageHandler {
           const avatar = await this.avatarService.getAvatarById(avatarId);
           if (avatar) {
             const channel = await this.chatService.client.channels.fetch(channelId);
-            await this.chatService.respondAsAvatar(channel, avatar);
+            await this.chatService.respondAsAvatar(channel, avatar, true);
           }
         } finally {
           this.processingMessages.delete(processingKey);

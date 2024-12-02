@@ -2,11 +2,11 @@ const { useState, useEffect } = React;
 
 function TierBadge({ tier }) {
   const colors = {
-    S: 'bg-purple-600',
-    A: 'bg-blue-600',
-    B: 'bg-green-600',
-    C: 'bg-yellow-600',
-    U: 'bg-gray-600'
+    S: 'bg-purple-600',  // legendary
+    A: 'bg-blue-600',    // rare
+    B: 'bg-green-600',   // uncommon
+    C: 'bg-yellow-600',  // common
+    U: 'bg-gray-600'     // undefined
   };
 
   return (
@@ -49,13 +49,17 @@ function TierFilter({ selectedTier, onTierChange }) {
 
 function AvatarDetailModal({ avatar, onClose }) {
   const [reflections, setReflections] = useState([]);
+  const [dungeonStats, setDungeonStats] = useState({ attack: 0, defense: 0, hp: 0 });
   const formatDate = (date) => new Date(date).toLocaleString();
 
   useEffect(() => {
     if (avatar) {
       fetch(`/api/avatar/${avatar._id}/reflections`)
         .then(res => res.json())
-        .then(data => setReflections(data));
+        .then(data => {
+          setReflections(data.reflections);
+          setDungeonStats(data.dungeonStats);
+        });
     }
   }, [avatar]);
 
@@ -75,6 +79,12 @@ function AvatarDetailModal({ avatar, onClose }) {
               <h2 className="text-3xl font-bold">{avatar.name} {avatar.emoji}</h2>
               <p className="text-gray-400">Messages: {avatar.messageCount}</p>
               <p className="text-gray-500">Created: {formatDate(avatar.createdAt)}</p>
+              {/* Display Dungeon Stats */}
+              <div className="mt-2">
+                <p className="text-gray-300">Attack: {dungeonStats.attack}</p>
+                <p className="text-gray-300">Defense: {dungeonStats.defense}</p>
+                <p className="text-gray-300">HP: {dungeonStats.hp}</p>
+              </div>
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">×</button>
@@ -158,6 +168,12 @@ function AvatarCard({ avatar, onSelect }) {
           </div>
           <p className="text-gray-400">Messages: {avatar.messageCount}</p>
           <p className="text-gray-400">{renderLives()}</p>
+          {/* Display Dungeon Stats */}
+          <div className="mt-1">
+            <p className="text-gray-300 text-sm">Attack: {avatar.attack}</p>
+            <p className="text-gray-300 text-sm">Defense: {avatar.defense}</p>
+            <p className="text-gray-300 text-sm">HP: {avatar.hp}</p>
+          </div>
           <p className="text-sm text-gray-500">
             Active: {new Date(avatar.lastMessage).toLocaleDateString()}
           </p>

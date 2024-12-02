@@ -87,7 +87,6 @@ export class MoveTool extends BaseTool {
         const arrivalMessage = await this.locationService.generateAvatarResponse(avatar, newLocation);
         // Process any user/channel mentions in the message
         await sendAsWebhook(
-          this.dungeonService.client,
           newLocation.channel.id,
           arrivalMessage,
           avatar.name,

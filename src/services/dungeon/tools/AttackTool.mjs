@@ -18,7 +18,7 @@ export class AttackTool extends BaseTool {
     }
 
     const stats = await this.dungeonService.getAvatarStats(attackerId);
-    const targetStats = await this.dungeonService.getAvatarStats(targetAvatar.id);
+    const targetStats = await this.dungeonService.getAvatarStats(targetavatar._id);
 
     const damage = Math.max(1, stats.attack - targetStats.defense);
     targetStats.hp -= damage;

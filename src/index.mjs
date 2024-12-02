@@ -1,6 +1,5 @@
 // index.js
 
-import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import dotenv from 'dotenv';
 import winston from 'winston';
 import { MongoClient } from 'mongodb';
@@ -8,17 +7,17 @@ import { MongoClient } from 'mongodb';
 import { OpenRouterService as AIService } from './services/openrouterService.mjs';
 import { AvatarGenerationService } from './services/avatarService.mjs';
 import {
+  client,
   reactToMessage,
   replyToMessage,
   sendAsWebhook,
+  sendAvatarProfileEmbedFromObject,
 } from './services/discordService.mjs';
 import { ChatService } from './services/chat/ChatService.mjs'; // Updated import path
 import { MessageHandler } from './services/chat/MessageHandler.mjs';
 
 // Load environment variables from .env file
 dotenv.config();
-
-const aiService = new AIService();
 
 // Initialize Logger
 const logger = winston.createLogger({
@@ -35,34 +34,24 @@ const logger = winston.createLogger({
   ],
 });
 
-// Instantiate the Discord client with necessary permissions
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMessageReactions,
-  ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
-});
 
 // Environment Variables
-const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'discord-bot';
-const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 
-// Validate Environment Variables
-if (!BOT_TOKEN) {
-  logger.error('DISCORD_BOT_TOKEN is not defined in the environment variables.');
-  process.exit(1);
-}
 
 if (!MONGO_URI) {
   logger.error('MONGODB_URI is not defined in the environment variables.');
   process.exit(1);
 }
 
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+if (!BOT_TOKEN) {
+  logger.error('DISCORD_BOT_TOKEN is not defined in the environment variables.');
+  process.exit(1);
+}
+
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 if (!DISCORD_CLIENT_ID) {
   logger.warn('DISCORD_CLIENT_ID is not defined. Slash commands registration might fail.');
 }
@@ -72,8 +61,9 @@ const mongoClient = new MongoClient(MONGO_URI);
 let messagesCollection;
 
 // Instantiate AvatarGenerationService
-const avatarService = new AvatarGenerationService();
+let avatarService = null;
 
+const aiService = new AIService();
 /**
  * Saves a message to the database.
  * @param {Message} message - The Discord message object.
@@ -90,6 +80,13 @@ async function saveMessageToDatabase(message) {
       channelId: message.channel.id,
       authorId: message.author.id,
       authorUsername: message.author.username,
+      author: {
+        id: message.author.id,
+        bot: message.author.bot,
+        username: message.author.username,
+        discriminator: message.author.discriminator,
+        avatar: message.author.avatar,
+      },
       content: message.content,
       timestamp: message.createdTimestamp,
     };
@@ -116,7 +113,6 @@ async function handleBreedCommand(message, args) {
   if (mentionedAvatars.size === 2) {
     const [avatar1, avatar2] = Array.from(mentionedAvatars);
     await replyToMessage(
-      client,
       message.channel.id,
       message.id,
       `Breeding ${avatar1.name} with ${avatar2.name}...`
@@ -137,7 +133,6 @@ async function handleBreedCommand(message, args) {
     return await handleCreateCommand(message, [prompt]);
   } else {
     await replyToMessage(
-      client,
       message.channel.id,
       message.id,
       'Please mention two avatars to breed.'
@@ -151,7 +146,6 @@ async function handleBreedCommand(message, args) {
 async function handleAttackCommand(message, args) {
   if (args.length < 1) {
     await replyToMessage(
-      client,
       message.channel.id,
       message.id,
       'Please mention an avatar to attack.'
@@ -165,7 +159,6 @@ async function handleAttackCommand(message, args) {
 
   if (!targetAvatar) {
     await replyToMessage(
-      client,
       message.channel.id,
       message.id,
       `Could not find an avatar named "${targetName}".`
@@ -176,7 +169,6 @@ async function handleAttackCommand(message, args) {
   const attackResult = await chatService.dungeonService.tools.get('attack').execute(message, [targetAvatar.name]);
 
   await replyToMessage(
-    client,
     message.channel.id,
     message.id,
     `🔥 **${attackResult}**`
@@ -199,7 +191,7 @@ async function handleCreateCommand(message, args) {
 
     // Update the summon existing avatar logic
     if (existingAvatar) {
-      const avatarId = existingAvatar.id || existingAvatar._id?.toString();
+      const avatarId = existingAvatar._id?.toString();
       if (!avatarId) {
         throw new Error('Avatar has no valid ID');
       }
@@ -213,19 +205,9 @@ async function handleCreateCommand(message, args) {
       existingAvatar.channelId = message.channel.id;
       await avatarService.updateAvatar(existingAvatar);
 
-      // Send a message to the channel
-      const intro = `🔮 **${existingAvatar.name}** appears!
-          
-          ${existingAvatar.description}
-          
-          ${existingAvatar.imageUrl}`
-      await sendAsWebhook(
-        client,
-        message.channel.id,
-        intro,
-        existingAvatar.name,
-        existingAvatar.imageUrl
-      );
+      existingAvatar.stats = await chatService.dungeonService.getAvatarStats(avatarId);
+      await sendAvatarProfileEmbedFromObject(existingAvatar);
+      await chatService.respondAsAvatar(message.channel, existingAvatar, true);
       return;
     }
 
@@ -248,19 +230,17 @@ async function handleCreateCommand(message, args) {
     }
 
     const createdAvatar = await avatarService.createAvatar(avatarData);
-    createdAvatar.id = createdAvatar.id || createdAvatar._id.toString();
 
-    if (createdAvatar && createdAvatar.id && createdAvatar.name) {
+    if (createdAvatar && createdAvatar.name) {
       // React to the original message with the avatar's emoji
       await reactToMessage(client, message.channel.id, message.id, createdAvatar.emoji || '🎉');
-
-      // Construct reply content
-      const replyContent = `✅ **Avatar "${createdAvatar.name}"** created successfully! 🎉\n**Traits:** ${createdAvatar.personality}\n**Description:** ${createdAvatar.description}\n**Image:** ${createdAvatar.imageUrl}`;
-      await replyToMessage(client, message.channel.id, message.id, replyContent);
 
       if (!createdAvatar.model) {
         createdAvatar.model = await aiService.selectRandomModel();
       }
+
+      createdAvatar.stats = await chatService.dungeonService.getAvatarStats(createdAvatar._id);
+      await sendAvatarProfileEmbedFromObject(createdAvatar);
 
       let intro = await aiService.chat([
         {
@@ -277,7 +257,6 @@ async function handleCreateCommand(message, args) {
       await avatarService.updateAvatar(createdAvatar);
 
       await sendAsWebhook(
-        client,
         message.channel.id,
         intro,
         createdAvatar.name,
@@ -286,7 +265,7 @@ async function handleCreateCommand(message, args) {
 
       // Initialize avatar position in current channel instead of market
       await chatService.dungeonService.initializeAvatar(
-        createdAvatar.id, message.channel.id
+        createdAvatar._id, message.channel.id
       );
 
     } else {
@@ -343,9 +322,9 @@ function extractMentionedAvatars(content, avatars) {
       }
 
       // Ensure required fields exist
-      if (!avatar.id || !avatar.name) {
+      if (!avatar._id || !avatar.name) {
         logger.error('Avatar missing required fields:', {
-          id: avatar.id,
+          _id: avatar._id,
           name: avatar.name,
           objectKeys: Object.keys(avatar)
         });
@@ -357,7 +336,7 @@ function extractMentionedAvatars(content, avatars) {
       const emojiMatch = avatar.emoji && content.includes(avatar.emoji);
 
       if (nameMatch || emojiMatch) {
-        logger.info(`Found mention of avatar: ${avatar.name} (${avatar.id})`);
+        logger.info(`Found mention of avatar: ${avatar.name} (${avatar._id})`);
         mentionedAvatars.add(avatar);
       }
     } catch (error) {
@@ -415,6 +394,10 @@ client.on('messageCreate', async (message) => {
 
     // Save message to database
     await saveMessageToDatabase(message);
+
+    if (message.author.bot) return;
+    // If it wasn't a command, process the channel for the message
+    await messageHandler.processChannel(message.channel.id);
 
   } catch (error) {
     logger.error(`Error processing message: ${error.stack}`);
@@ -479,8 +462,7 @@ async function main() {
     const db = mongoClient.db(MONGO_DB_NAME);
     messagesCollection = db.collection('messages');
 
-    // Initialize avatar service
-    await avatarService.connectToDatabase(db);
+    avatarService = new AvatarGenerationService(db);
 
 
     dbConnected = true;

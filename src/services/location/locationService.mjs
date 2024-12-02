@@ -146,14 +146,19 @@ export class LocationService {
       const fuse = new Fuse(channels, this.fuseOptions);
       
       let cleanLocationName = await this.aiService.chat([
-        { role: 'system', content: 'Generate a fantasy location name.' },
-        { role: 'user', content: `Clean up or revise this location name:
+        { role: 'system', content: 'You are an expert editor.' },
+        { role: 'user', content: `The avatar has requested to move to or create the following location:
 
         ${locationName}
 
-        Ensure it is less than 100 characters, and suitable for a fantasy setting.
-        ONLY return the revised name, without any additional text. If the name is already suitable, return it as is.
-        ` }]);
+        Ensure your response is a single location name, less than 80 characters, and suitable for a fantasy setting.
+        If the name is already suitable, return it as is.
+        If it needs editing, revise it to be more suitable for a fantasy setting.
+        Try to keep the original meaning intact.
+        ONLY return the revised name, without any additional text.` }
+      ], {
+        model: 'openai/gpt-4o'
+      });
 
       // trim by words
       const words = cleanLocationName.split(' ');
@@ -162,7 +167,7 @@ export class LocationService {
       cleanLocationName = (words.join(' ')).trim();
       
       // Try to find existing location
-      const matches = fuse.search(cleanLocationName);
+      const matches = fuse.search(cleanLocationName, { limit: 1 });
       if (matches.length > 0) {
         return matches[0].item;
       }
@@ -183,7 +188,9 @@ export class LocationService {
       const locationDescription = await this.aiService.chat([
         { role: 'system', content: 'Generate a brief, atmospheric description of this fantasy location.' },
         { role: 'user', content: `Describe ${cleanLocationName} in 2-3 sentences.` }
-      ]);
+      ], {
+        model: 'openai/gpt-4o'
+      });
 
       const locationImage = await this.generateLocationImage(cleanLocationName, locationDescription);
 
@@ -201,13 +208,12 @@ export class LocationService {
         }]
       });
 
-      const evocativeDescription = await this.generateLocationDescription(locationName, locationImage);
+      const evocativeDescription = await this.generateLocationDescription(cleanLocationName, locationImage);
 
       await sendAsWebhook(
-        this.client,
         thread.id,
         evocativeDescription,
-        locationName,
+        cleanLocationName,
         locationImage
       );
 
@@ -216,7 +222,7 @@ export class LocationService {
           { channelId: thread.id },
           { 
             $set: {
-              name: locationName,
+              name: cleanLocationName,
               description: evocativeDescription,
               imageUrl: locationImage,
               createdAt: new Date(),
@@ -229,7 +235,7 @@ export class LocationService {
 
       return {
         id: thread.id,
-        name: locationName,
+        name: cleanLocationName,
         channel: thread,
         description: evocativeDescription,
         imageUrl: locationImage
@@ -268,10 +274,11 @@ export class LocationService {
   }
 
   async generateAvatarResponse(avatar, location) {
-    const prompt = `You are ${avatar.name}, a ${avatar.personality}. You have just arrived at ${location.name}. Write a short IC (in-character) message about your arrival or your reaction to this place.`;
+    const prompt = `You have just arrived at ${location.name}. Write a short in-character message about your arrival or your reaction to this place.`;
     
     const response = await this.aiService.chat([
-      { role: 'system', content: 'You are a character in a roleplay setting. Keep responses brief and in-character.' },
+      { role: 'system', content: `You are ${avatar.name}, a ${avatar.personality}. Keep responses brief and in-character.` },
+      { role: 'assistant', content: `${avatar.dynamicPersonality}\n\n${avatar.memory || ''}` },
       { role: 'user', content: prompt }
     ]);
 
@@ -331,7 +338,6 @@ export class LocationService {
 
       // Send the summary as the location
       await sendAsWebhook(
-        this.client,
         location.channel.id,
         summary,
         location.name,

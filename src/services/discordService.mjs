@@ -1,6 +1,12 @@
 // discordService.js
 
-import { Client, GatewayIntentBits, Partials, WebhookClient } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  WebhookClient,
+  EmbedBuilder
+} from 'discord.js';
 import winston from 'winston';
 
 import { chunkMessage } from './utils/messageChunker.mjs';
@@ -20,6 +26,20 @@ const logger = winston.createLogger({
     new winston.transports.File({ filename: 'discordService.log' }),
   ],
 });
+
+
+
+// Instantiate the Discord client with necessary permissions
+export const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+});
+
 
 // Webhook management cache
 const webhookCache = new Map();
@@ -51,7 +71,7 @@ export async function reactToMessage(client, channelId, messageId, emoji) {
  * @param {string} messageId - The ID of the message to reply to.
  * @param {string} replyContent - The content of the reply.
  */
-export async function replyToMessage(client, channelId, messageId, replyContent) {
+export async function replyToMessage(channelId, messageId, replyContent) {
   try {
     const channel = await client.channels.fetch(channelId);
     if (!channel) throw new Error(`Channel with ID ${channelId} not found.`);
@@ -70,7 +90,7 @@ export async function replyToMessage(client, channelId, messageId, replyContent)
  * @param {Channel} channel - The Discord channel object.
  * @returns {WebhookClient|null} - The webhook client or null if failed.
  */
-async function getOrCreateWebhook(client, channel) {
+async function getOrCreateWebhook(channel) {
   try {
 
     if (channel.isThread()) {
@@ -97,32 +117,53 @@ async function getOrCreateWebhook(client, channel) {
     return webhook;
   } catch (error) {
     logger.error(`Failed to create or fetch webhook for channel ${channel.id}: ${error.message}`);
-    return null;
+    throw error;
   }
 }
 
 
+import models from '../models.config.mjs';
+/**
+ * Finds the rarity of a given model.
+ * @param {string} modelName - The name of the model.
+ * @returns {string} - The rarity level ('common', 'uncommon', 'rare', 'legendary').
+ */
+function getModelRarity(modelName) {
+  const model = models.find(m => m.model === modelName);
+  return model ? model.rarity : 'undefined'; // Default to 'common' if not found
+}
+
+import rarityColors from './utils/rarityColors.mjs';
+
+function generateProgressBar(value, increment, emoji) {
+  return emoji.repeat(Math.floor(value / increment));
+}
+
 /**
  * Sends an avatar profile as an embed via webhook with a custom username and avatar.
+ * Includes dungeon stats such as Attack, Defense, and HP.
  * @param {Client} client - The Discord client instance.
  * @param {Object} avatar - The avatar object containing profile information.
  */
-export async function sendAvatarProfileEmbedFromObject(client, avatar) {
+export async function sendAvatarProfileEmbedFromObject(avatar) {
   if (!avatar || typeof avatar !== 'object') {
     throw new Error('Invalid avatar object provided.');
   }
 
   const {
+    _id, // Assuming _id is used to fetch dungeon stats
     name,
     emoji,
+    short_description,
     description,
     imageUrl,
     channelId,
     model,
     createdAt,
     updatedAt,
+    stats,
     traits, // Assuming 'traits' is a string; adjust if it's an array
-    innerMonologueThreadId, // Assuming this is optional
+    innerMonologueThreadId, // Optional
   } = avatar;
 
   if (!channelId || typeof channelId !== 'string') {
@@ -136,15 +177,24 @@ export async function sendAvatarProfileEmbedFromObject(client, avatar) {
     }
 
     // Get or create webhook
-    const webhook = await getOrCreateWebhook(client, channel);
+    const webhookClient = await getOrCreateWebhook(channel);
+    if (!webhookClient) {
+      throw new Error(`Failed to get or create webhook for channel ${channelId}`);
+    }
+
+    // Determine the rarity of the model
+    const rarity = getModelRarity(model);
+    const embedColor = rarityColors[rarity.toLowerCase()] || rarityColors['no_model']; // Default to 'no_model' gray
 
     // Create the embed using EmbedBuilder
     const avatarEmbed = new EmbedBuilder()
-      .setColor(0x1e90ff) // DodgerBlue; customize as needed
+      .setColor(embedColor) // Set color based on rarity
       .setTitle(`${emoji} ${name}`)
-      .setURL(innerMonologueThreadId
-        ? `https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId}`
-        : `https://discord.com/users/${channel.guildId}`) // Adjust URL as needed
+      .setURL(
+        innerMonologueThreadId
+          ? `https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId}`
+          : `https://discord.com/users/${channel.guildId}` // Adjust URL as needed
+      )
       .setAuthor({
         name: `${name} ${emoji}`,
         iconURL: imageUrl,
@@ -152,24 +202,19 @@ export async function sendAvatarProfileEmbedFromObject(client, avatar) {
           ? `https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId}`
           : `https://discord.com/users/${channel.guildId}`, // Adjust URL as needed
       })
-      .setDescription(description || 'No description found.')
+      .setDescription(short_description || description.substring(0, 77) + (description.length > 77 ? '...' : '') || 'No description found.')
       .setThumbnail(imageUrl)
       .addFields(
         {
-          name: '📅 Summoning Date',
+          name: '🎂 Summonsday',
           value: `<t:${Math.floor(new Date(createdAt || Date.now()).getTime() / 1000)}:F>`,
           inline: true,
         },
         {
-          name: '🧠 Model',
-          value: `${model || 'N/A'}`,
+          name: '🧠 Brain',
+          value: `${model || 'N/A'} (${rarity})`,
           inline: true,
         },
-        {
-          name: '⭐ Traits',
-          value: traits || 'None',
-          inline: false,
-        }
       )
       .setImage(imageUrl)
       .setTimestamp(new Date(updatedAt || Date.now()))
@@ -178,17 +223,62 @@ export async function sendAvatarProfileEmbedFromObject(client, avatar) {
         iconURL: imageUrl,
       });
 
-    // Optionally, add a link to the inner monologue thread
-    if (innerMonologueThreadId) {
+    if (traits) {
       avatarEmbed.addFields({
-        name: '🧵 Inner Monologue Thread',
-        value: `[View Thread](https://discord.com/channels/${channel.guildId}/${channelId}/${innerMonologueThreadId})`,
+        name: '🧬 Traits',
+        value: traits,
         inline: false,
       });
     }
 
+    // Add Inner Monologue Thread link if available
+    if (innerMonologueThreadId) {
+      avatarEmbed.addFields({
+        name: '🧵 Inner Monologue Thread',
+        value: `<#${innerMonologueThreadId}>`,
+        inline: false,
+      });
+    }
+
+    // Add Dungeon Stats if available
+    if (stats) {
+      const { attack, defense, hp } = stats;
+
+      // Generate visual progress bars
+      const attackBar = generateProgressBar(attack, 5, '⚔️');
+      const defenseBar = generateProgressBar(defense, 5, '🛡️');
+      const hpBar = generateProgressBar(hp, 33, '❣️'); // Assuming max HP is 1000
+
+      avatarEmbed.addFields(
+        {
+          name: 'Attack / Defense / HP',
+          value: `${attackBar} / ${defenseBar} / ${hpBar} `,
+          inline: true,
+        },
+      );
+    } else {
+      // If no stats found, indicate so
+      avatarEmbed.addFields(
+        {
+          name: '⚔️ Attack',
+          value: 'N/A',
+          inline: true,
+        },
+        {
+          name: '🛡️ Defense',
+          value: 'N/A',
+          inline: true,
+        },
+        {
+          name: '❤️ HP',
+          value: 'N/A',
+          inline: true,
+        }
+      );
+    }
+
     // Send the embed via webhook
-    await webhook.send({
+    await webhookClient.send({
       embeds: [avatarEmbed],
       threadId: channel.isThread() ? channelId : undefined,
       username: name.slice(0, 80), // Discord limits usernames to 80 characters
@@ -213,7 +303,7 @@ export async function sendAvatarProfileEmbedFromObject(client, avatar) {
  * @param {string} username - The username to display for the webhook message.
  * @param {string} avatarUrl - The URL of the avatar to display for the webhook message.
  */
-export async function sendAsWebhook(client, channelId, content, username, avatarUrl) {
+export async function sendAsWebhook(channelId, content, username, avatarUrl) {
   if (!channelId || typeof channelId !== 'string') {
     throw new Error(`Invalid channel ID: ${channelId}`);
   }
@@ -232,22 +322,22 @@ export async function sendAsWebhook(client, channelId, content, username, avatar
       throw new Error(`Parent channel not found for thread ${channelId}`);
     }
 
-    let webhook = await getOrCreateWebhook(client, targetChannel);
-    
-    const chunks = chunkMessage(processMessageLinks(content));
+    let webhook = await getOrCreateWebhook(targetChannel);
+
+    const chunks = chunkMessage(processMessageLinks(content, client));
     for (const chunk of chunks) {
-        // Send to thread if needed, otherwise send to channel
-        await webhook.send({
-          content: chunk,
-          username: username.slice(0, 80),
-          avatarURL: avatarUrl,
-          threadId: channel.isThread() ? channelId : undefined
-        });
-        logger.info(`Sent message to channel ${channelId} via webhook`);
-     }
+      // Send to thread if needed, otherwise send to channel
+      await webhook.send({
+        content: chunk,
+        username: username.slice(0, 80),
+        avatarURL: avatarUrl,
+        threadId: channel.isThread() ? channelId : undefined
+      });
+      logger.info(`Sent message to channel ${channelId} via webhook`);
+    }
 
   } catch (error) {
-    console.error(error.message);
+    console.error(error);
     console.error(channelName, channelId);
     logger.error(`Failed to send message to channel ${channelId} via webhook: ${error.message}`);
   }

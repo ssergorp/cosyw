@@ -3,7 +3,7 @@
 import Replicate from 'replicate';
 // import { OllamaService as AIService } from './ollamaService.mjs';
 import { OpenRouterService as AIService } from './openrouterService.mjs';
-import { MongoClient, ObjectId } from 'mongodb';
+
 import process from 'process';
 import winston from 'winston';
 import { v2 as cloudinary } from 'cloudinary';
@@ -11,15 +11,17 @@ import { extractJSON } from './utils.mjs';
 
 import { uploadImage } from './s3imageService.mjs';
 
+import { ObjectId } from 'mongodb';
+
 import fs from 'fs/promises';
 import { ArweaveService } from './arweaveService.mjs';
 import fetch from 'node-fetch';
 
 export class AvatarGenerationService {
-  constructor() {
+  constructor(db) {
     this.aiService = new AIService();
     this.replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
-    this.db = null; // Will be set when connecting to the database
+    this.db = db; // Will be set when connecting to the database
 
     // Initialize Logger
     this.logger = winston.createLogger({
@@ -36,14 +38,8 @@ export class AvatarGenerationService {
       ],
     });
 
-    // MongoDB connection URI and database name from environment variables
-    this.MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
-    this.DB_NAME = process.env.MONGO_DB_NAME || 'imageRequests';
     this.COLLECTION_NAME = process.env.MONGO_COLLECTION_NAME || 'requests';
     this.AVATARS_COLLECTION = process.env.AVATARS_COLLECTION || 'avatars';
-
-    // Initialize MongoDB client
-    this.mongoClient = new MongoClient(this.MONGO_URI);
 
     // Initialize Cloudinary
     cloudinary.config({
@@ -56,24 +52,10 @@ export class AvatarGenerationService {
     this.prompts = null;
   }
 
-  /**
-   * Connects the service to the MongoDB database.
-   */
-  async connectToDatabase(db) {
-    try {
-      this.db = db;
-      this.avatarsCollection = this.db.collection(this.AVATARS_COLLECTION);
-      this.logger.info('AvatarGenerationService connected to the MongoDB database.');
-    } catch (error) {
-      this.logger.error(`Failed to connect to MongoDB: ${error.message}`);
-      throw error; // Re-throw to handle it in the calling function
-    }
-  }
-
   async getAvatars(avatarIds) {
     try {
       const avatars = await this.avatarsCollection.find({
-        _id: { $in: avatarIds.map(id => ObjectId.createFromHexString(id)) }
+        _id: { $in: avatarIds }
       }).toArray();
       return avatars;
     } catch (error) {
@@ -82,17 +64,6 @@ export class AvatarGenerationService {
     }
   }
 
-  /**
-   * Disconnects the service from the MongoDB database.
-   */
-  async disconnectFromDatabase() {
-    try {
-      await this.mongoClient.close();
-      this.logger.info('AvatarGenerationService disconnected from MongoDB.');
-    } catch (error) {
-      this.logger.error(`Error disconnecting from MongoDB: ${error.message}`);
-    }
-  }
 
   avatarCache = [];
   async getAllAvatars(includeStatus = 'alive') {
@@ -114,9 +85,9 @@ export class AvatarGenerationService {
       const avatars = await collection.find(query).toArray();
 
       return avatars.map(avatar => ({
-        ...avatar,
-        id: avatar.id || avatar._id.toString(),
+        ...avatar
       }));
+
     } catch (error) {
       this.logger.error(`Error fetching avatars: ${error.message}`);
       return [];
@@ -133,7 +104,6 @@ export class AvatarGenerationService {
 
       return avatars.map(avatar => ({
         ...avatar,
-        id: avatar.id || avatar._id.toString(),
       }));
     } catch (error) {
       this.logger.error(`Error fetching avatars in channel: ${error.message}`);
@@ -141,10 +111,17 @@ export class AvatarGenerationService {
     }
   }
 
+  /**
+   * Fetches an avatar by its ID.
+   * @param {ObjectId} id - The ID of the avatar to fetch.
+   * @returns {Object} - The avatar object.
+   * @throws {Error} - If the avatar is not found.
+   * 
+   **/
   async getAvatarById(id) {
     const collection = this.db.collection(this.AVATARS_COLLECTION);
     const avatar = await collection
-      .findOne({ _id: ObjectId.createFromHexString(id) });
+      .findOne({ _id: id });
 
     if (!avatar) {
       throw new Error(`Avatar with ID "${id}" not found.`);
@@ -170,19 +147,6 @@ export class AvatarGenerationService {
     return avatars.filter(avatar => message.includes(avatar.name));
   }
 
-  async getAvatarById(id) {
-    try {
-      const collection = this.db.collection(this.AVATARS_COLLECTION);
-      const avatar = await collection.findOne({ _id: ObjectId.createFromHexString(id) });
-      if (!avatar) {
-        throw new Error(`Avatar with ID "${id}" not found.`);
-      }
-      return avatar;
-    } catch (error) {
-      this.logger.error(`Error fetching avatar: ${error.message}`);
-      return null;
-    }
-  }
   async getAvatar(name) {
     try {
       const collection = this.db.collection(this.AVATARS_COLLECTION);
@@ -309,7 +273,7 @@ export class AvatarGenerationService {
         date: now,
       };
 
-      await collection.insertOne(record);
+      const result = await collection.insertOne(record); 
       this.logger.info('Record inserted into MongoDB successfully.');
     } catch (error) {
       this.logger.error(`Error inserting into MongoDB: ${error.message}`);
@@ -385,6 +349,10 @@ export class AvatarGenerationService {
       // Sync Arweave prompt if it exists
       if (avatar.arweave_prompt) {
         await this.syncArweavePrompt(avatar);
+      }
+
+      if (typeof avatar._id === 'string') {
+        throw new Error('Avatar ID must be an ObjectId.');
       }
 
       // Prepare the update document
@@ -491,14 +459,9 @@ export class AvatarGenerationService {
         return null;
       }
 
-      // Assign a unique ID if not already present
-      if (!avatar.id) {
-        avatar.id = this.generateUniqueId();
-      }
-
       // Ensure the name is set; default if not provided
       if (!avatar.name) {
-        avatar.name = `Avatar_${avatar.id}`;
+        avatar.name = `Avatar_${new ObjectId().toHexString()}`;
       }
 
       // Step 4: Download the Image as Buffer
@@ -560,7 +523,7 @@ export class AvatarGenerationService {
     }
 
     try {
-      const avatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: ObjectId.createFromTime(avatarId) });
+      const avatar = await this.db.collection(this.AVATARS_COLLECTION).findOne({ _id: avatarId });
       if (!avatar) {
         this.logger.error(`Avatar with ID ${avatarId} not found.`);
         return false;
@@ -586,7 +549,7 @@ export class AvatarGenerationService {
 
       // Step 5: Update the avatar document with the new image URL
       const updateResult = await this.db.collection(this.AVATARS_COLLECTION).updateOne(
-        { _id: ObjectId.createFromTime(avatarId) },
+        { _id: avatarId },
         { $set: { imageUrl: s3Url, updatedAt: new Date() } }
       );
 
@@ -603,11 +566,6 @@ export class AvatarGenerationService {
     }
   }
 
-  // Add a method to generate unique IDs
-  generateUniqueId() {
-    return new ObjectId().toString();
-  }
-
   async syncArweavePrompt(avatar) {
     if (!avatar.arweave_prompt || !this.isValidUrl(avatar.arweave_prompt)) {
       return null;
@@ -621,7 +579,8 @@ export class AvatarGenerationService {
       const prompt = await response.text();
 
       // Update the avatar's prompt
-      await this.avatarsCollection.updateOne(
+      const avatarsCollection = this.db.collection(this.AVATARS_COLLECTION);
+      await avatarsCollection.updateOne(
         { _id: avatar._id },
         { $set: { prompt: prompt.trim() } }
       );

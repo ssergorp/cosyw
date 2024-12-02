@@ -28,8 +28,6 @@ export class ConversationHandler {
     this.BOT_RESPONSE_COOLDOWN = 300000;  // 5 minutes for bot messages
     this.INITIAL_RESPONSE_COOLDOWN = 10000; // 10 seconds after joining channel
 
-    // Track last response times
-    this.lastResponses = new Map(); // channelId -> Map<avatarId, {timestamp, wasBot}>
   }
 
   async checkIdleUpdate(avatars) {
@@ -48,12 +46,7 @@ export class ConversationHandler {
     const { crossGuild = false, channelIds = [] } = options;
 
     try {
-      const avatarId = avatar.id || avatar._id?.toString();
-      if (!avatarId || typeof avatarId !== 'string') {
-        throw new Error('Invalid avatar ID');
-      }
-
-      const lastNarrative = await this.getLastNarrative(avatarId);
+      const lastNarrative = await this.getLastNarrative(avatar._id);
       if (lastNarrative && Date.now() - lastNarrative.timestamp < this.COOLDOWN_TIME) {
         this.logger.info(`Narrative cooldown active for ${avatar.name}`);
         return;
@@ -71,8 +64,8 @@ export class ConversationHandler {
 
       const thread = await this.getOrCreateThread(avatar);
       if (thread) {
-        await sendAsWebhook(this.client, thread.id, narrative, avatar.name, avatar.imageUrl);
-        await this.storeNarrative(thread, avatarId, narrative);
+        await sendAsWebhook(thread.id, narrative, avatar.name, avatar.imageUrl);
+        await this.storeNarrative(thread, avatar._id, narrative);
         this.updateNarrativeHistory(avatar, narrative, thread.guild.name);
       }
 
@@ -178,9 +171,6 @@ Describe:
   }
 
   async sendResponse(channel, avatar) {
-    const avatarId = avatar.id || avatar._id?.toString();
-    const channelId = channel.id;
-
     try {
 
       // Get recent channel messages
@@ -197,7 +187,7 @@ Describe:
       }
 
       // Get avatar's recent reflection
-      const lastNarrative = await this.getLastNarrative(avatarId);
+      const lastNarrative = await this.getLastNarrative(avatar._id);
 
       // Build context for response
       const context = {
@@ -212,6 +202,7 @@ Describe:
         await this.avatarService.updateAvatar(avatar);
       }
 
+      const systemPrompt = await this.buildSystemPrompt(avatar);
       // Generate response using AI service
       let response = await this.aiService.chat([
         {
@@ -219,13 +210,15 @@ Describe:
           content: `You are ${avatar.name}. ${avatar.personality}
           Your last reflection: ${context.lastReflection}
           
-          ${await this.buildSystemPrompt(avatar)}
+          ${systemPrompt}
           `
         },
         {
           role: 'user',
-          content: `Channel: #${context.channelName} in ${context.guildName}\n\nRecent messages:\n${context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')
-            }\n\nYou are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
+          content: `Channel: #${context.channelName} in ${context.guildName}
+          Recent messages:
+            ${context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')}
+          You are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
         }
       ], {
         max_tokens: 256,
@@ -255,7 +248,7 @@ Describe:
         commandResults = await Promise.all(
           commands.map(cmd =>
             this.dungeonService.processAction(
-              { channel, author: { id: avatarId, username: avatar.name }, content: response },
+              { channel, author: { id: avatar._id, username: avatar.name }, content: response },
               cmd.command,
               cmd.params
             )
@@ -263,23 +256,24 @@ Describe:
         );
 
 
-        sentMessage = await sendAsWebhook(
-          this.client,
-          channel.id,
-          commandResults.join('\n'),
-          '🛠️ ' + avatar.name,
-          avatar.imageUrl
-        );
+        if (commandResults.length) {
+          this.logger.info(`Command results for ${avatar.name}: ${commandResults.join(', ')}`);
+          sentMessage = await sendAsWebhook(
+            avatar.channelId,
+            commandResults.join('\n'),
+            '🛠️ ' + avatar.name,
+            avatar.imageUrl
+          );
+        }
 
         // load the avatar again to get the updated state
-        avatar = await this.avatarService.getAvatarById(avatarId);
+        avatar = await this.avatarService.getAvatarById(avatar._id);
       }
 
       // Send the main response if there's clean text
       if (!commands.length || cleanText.trim()) {
 
         sentMessage = await sendAsWebhook(
-          this.client,
           avatar.channelId,
           commands.length ? cleanText : response,
           avatar.name,
@@ -287,23 +281,8 @@ Describe:
         );
       }
 
-      // Send command results if any
-      const validResults = commandResults.filter(r => r);
-      if (validResults.length > 0) {
-        sentMessage = await sendAsWebhook(
-          this.client,
-          channel.id,
-          validResults.join('\n'),
-          avatar.name,
-          avatar.imageUrl
-        );
-      }
-
       // Update cooldown
-      this.updateResponseCooldown(avatarId, channelId);
-
-      // Update last response time and type
-      this.updateLastResponse(channelId, avatarId, Date.now(), false);
+      this.updateResponseCooldown(avatar._id, channel.id);
 
       return response;
 
@@ -311,21 +290,6 @@ Describe:
       this.logger.error(`Error sending response for ${avatar.name}: ${error.message}`);
       throw error;
     }
-  }
-
-  getLastResponse(channelId, avatarId) {
-    return this.lastResponses.get(channelId)?.get(avatarId);
-  }
-
-  updateLastResponse(channelId, avatarId, timestamp, wasBot) {
-    if (!this.lastResponses.has(channelId)) {
-      this.lastResponses.set(channelId, new Map());
-    }
-    this.lastResponses.get(channelId).set(avatarId, { timestamp, wasBot });
-  }
-
-  getLastResponseTime(avatarId, channelId) {
-    return this.responseCooldowns.get(avatarId)?.get(channelId);
   }
 
   updateResponseCooldown(avatarId, channelId) {
@@ -358,7 +322,7 @@ Describe:
   `;
 
     // Add location awareness to the prompt
-    const location = await this.dungeonService.getAvatarLocation(avatar.id);
+    const location = await this.dungeonService.getAvatarLocation(avatar._id);
     const locationPrompt = location ?
       `\n\nYou are currently in ${location.name}. ${location.description}` :
       '\n\nYou are wandering between locations.';

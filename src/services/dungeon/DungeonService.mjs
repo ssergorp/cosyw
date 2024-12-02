@@ -31,6 +31,10 @@ export class DungeonService {
     });
   }
 
+  getAvatarStats(avatarId) {
+    return this.avatarStats.get(avatarId) || this.defaultStats;
+  }
+
   extractToolCommands(text) {
     if (!text) return { commands: [], cleanText: '', commandLines: [] };
     
@@ -261,7 +265,7 @@ export class DungeonService {
       const db = client.db(process.env.MONGO_DB_NAME);
 
       // If not found, try direct database lookup
-      const avatar = await db.collection('avatars').findOne({ _id: ObjectId.createFromHexString(avatarId) });
+      const avatar = await db.collection('avatars').findOne({ _id: avatarId });
       if (avatar) {
         return avatar;
       }

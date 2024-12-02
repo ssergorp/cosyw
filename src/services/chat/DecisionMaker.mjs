@@ -60,7 +60,7 @@ export class DecisionMaker {
       return !lastMessage.author.bot || Math.random() > botMessagePercentage;
     }
 
-    const avatarId = avatar.id || avatar._id.toString();
+    const avatarId = avatar._id || avatar._id;
 
     if (!avatarId || !avatar.name) {
       this.logger.error('DecisionMaker received avatar with missing id or name:', JSON.stringify(avatar, null, 2));
@@ -81,6 +81,56 @@ export class DecisionMaker {
         role: m.author.bot ? 'assistant' : 'user',
         content: `${m.author.username}: ${m.content}`
       }));
+
+      if (!avatar.innerMonologueChannel) {
+        // Find #avatars channel
+        const avatarsChannel = channel.guild.channels.cache.find(c => c.name === 'avatars');
+        if (avatarsChannel) {
+          // Find a thread called avatar.name Narratives
+          const innerMonologueChannel = avatarsChannel.threads.cache.find(t => t.name === `${avatar.name} Narratives`);
+          if (innerMonologueChannel) {
+            avatar.innerMonologueChannel = innerMonologueChannel.id;
+          }
+          // Otherwise create a new thread
+          else {
+            const newThread = await avatarsChannel.threads.create({
+              name: `${avatar.name} Narratives`,
+              autoArchiveDuration: 60,
+              reason: 'Create inner monologue thread for avatar'
+            });
+            avatar.innerMonologueChannel = newThread.id;
+
+            // Post the avatars image to the inner monologue channel
+            sendAsWebhook(
+              avatar.innerMonologueChannel,
+              avatar.imageUrl,
+              avatar.name, avatar.imageUrl
+            );
+
+            // Post the avatars description to the inner monologue channel
+            sendAsWebhook(
+              avatar.innerMonologueChannel,
+              avatar.description,
+              avatar.name, avatar.imageUrl
+            );
+
+            // Post the avatars personality to the inner monologue channel
+            sendAsWebhook(
+              avatar.innerMonologueChannel,
+              `Personality: ${avatar.personality}`,
+              avatar.name, avatar.imageUrl
+            );
+
+
+            // Post the avatars Dynamic Personality to the inner monologue channel
+            sendAsWebhook(
+              avatar.innerMonologueChannel,
+              `Dynamic Personality: ${avatar.dynamicPersonality}`,
+              avatar.name, avatar.imageUrl
+            );
+          }
+        }
+      }
 
       const decision = await this.makeDecision(avatar, context, client);
       return decision.decision === 'YES';
@@ -129,19 +179,20 @@ export class DecisionMaker {
     try {
 
       const decisionPrompt = [
-        ...context, { role: 'user', content: `As ${avatar.name}, analyze the conversation with a haiku, and decide whether you should respond, after the haiku reply "YES" if it indicates you should respond.F` }
+        ...context, { role: 'user', content: `As ${avatar.name}, analyze the conversation with a haiku.
+        Then, on a new line, respond with "YES" if it indicates you should respond. Or "NO" to remain silent.` }
       ];
       const aiResponse = await this.aiService.chat(decisionPrompt, { model: DECISION_MODEL });
 
       console.log(`${avatar.name} thinks: `, aiResponse);
       const aiLines = aiResponse.split('\n').map(l => l.trim());
-      const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('YES') !== -1) ? { decision: 'YES' } : { decision: 'NO' };
+      const decision = (aiLines[aiLines.length - 1].toUpperCase().indexOf('NO') !== -1) ? { decision: 'NO' } : { decision: 'YES' };
       decision.reason = aiLines.slice(0, -1).join('\n').trim();
 
       // Post the haiku to the avatars inner monologue
       if (avatar.innerMonologueChannel) {
         sendAsWebhook(
-          client, avatar.innerMonologueChannel,
+          avatar.innerMonologueChannel,
           aiLines.slice(0, -1).join('\n').trim(),
           avatar.name, avatar.imageUrl
         );
