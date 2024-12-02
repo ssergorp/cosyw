@@ -166,7 +166,7 @@ async function handleAttackCommand(message, args) {
     return;
   }
 
-  const attackResult = await chatService.dungeonService.tools.get('attack').execute(message, [targetAvatar.name]);
+  const attackResult = await chatService.dungeonService.tools.get('attack').execute(message, [targetAvatar.name], targetAvatar);
 
   await replyToMessage(
     message.channel.id,

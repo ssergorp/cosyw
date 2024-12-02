@@ -105,24 +105,6 @@ export class MoveTool extends BaseTool {
     }
   }
 
-  async returnToOriginalLocation(avatarId) {
-    const tempMove = this.temporaryMoves.get(avatarId);
-    if (tempMove && tempMove.originalLocation) {
-      // Move avatar back to original location
-      await this.execute({
-        author: { id: avatarId },
-        channel: { guild: this.dungeonService.client.guilds.cache.first() }
-      }, [tempMove.originalLocation.name]);
-      this.temporaryMoves.delete(avatarId);
-    }
-  }
-
-  isAccessible(currentLocation, newLocation) {
-    // Add location accessibility logic here
-    // For now, allow all movements
-    return true;
-  }
-
   getDescription() {
     return 'Move to a different area';
   }

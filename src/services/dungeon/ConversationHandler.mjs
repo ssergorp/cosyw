@@ -1,6 +1,6 @@
-import { MongoClient } from 'mongodb';
 
 import { sendAsWebhook } from '../discordService.mjs';
+import { MongoClient } from 'mongodb';
 import { MemoryService } from '../memoryService.mjs';
 
 export class ConversationHandler {
@@ -15,7 +15,6 @@ export class ConversationHandler {
     this.lastUpdate = Date.now();
     this.avatarService = avatarService;
     this.dungeonService = dungeonService;
-    this.memoryService = new MemoryService(this.logger);
 
     // Add response cooldown tracking
     this.responseCooldowns = new Map(); // avatarId -> channelId -> timestamp
@@ -62,7 +61,6 @@ export class ConversationHandler {
       const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
       const narrative = await this.aiService.chat([
         { role: 'system', content: avatar.prompt || `You are ${avatar.name}. ${avatar.personality}` },
-        { role: 'assistant', content: `I remember: ${(await this.memoryService.getMemories(avatar._id)).map(m => m.memory).join('\n')}` },
         { role: 'user', content: prompt }
       ], { model: avatar.model });
 
@@ -307,6 +305,14 @@ Describe:
   async buildSystemPrompt(avatar) {
     const basePrompt = `You are ${avatar.name}. ${avatar.personality}`;
     const sentimentPrompt = `You have not deveveloped any sentiments yet.`;
+    
+    // Get memories
+    const memoryService = new MemoryService(this.logger);
+    const memories = await memoryService.getMemories(avatar._id);
+    const memoryPrompt = memories.length > 0 ? 
+      `\n\nYour memories:\n${memories.map(m => `- ${m.memory}`).join('\n')}` :
+      '\n\nYou have no stored memories yet.';
+
     const dungeonPrompt = `
     Sentiments:
     
@@ -316,7 +322,7 @@ Describe:
     ${this.dungeonService.getCommandsDescription()}
     
     You can use any of these commands on a new line at the end of your message.
-  `;
+    `;
 
     // Add location awareness to the prompt
     const location = await this.dungeonService.getAvatarLocation(avatar._id);
@@ -326,6 +332,6 @@ Describe:
 
     const movementPrompt = `\nYou can move to new locations using the !move command.`;
 
-    return basePrompt + locationPrompt + movementPrompt + dungeonPrompt;
+    return basePrompt + memoryPrompt + locationPrompt + movementPrompt + dungeonPrompt;
   }
 }

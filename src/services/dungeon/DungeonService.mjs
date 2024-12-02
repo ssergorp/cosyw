@@ -1,10 +1,12 @@
-import { MongoClient, ObjectId } from 'mongodb';
+import { MongoClient } from 'mongodb';
+import { OpenRouterService } from '../openrouterService.mjs';
+
 import { DungeonLog } from './DungeonLog.mjs';
 import { AttackTool } from './tools/AttackTool.mjs';
 import { DefendTool } from './tools/DefendTool.mjs';
 import { MoveTool } from './tools/MoveTool.mjs';
+import { RememberTool } from './tools/RememberTool.mjs';
 import { CreationTool } from './tools/CreationTool.mjs';
-import { OpenRouterService } from '../openrouterService.mjs';
 
 export class DungeonService {
   constructor(client, logger, avatarService = null) {
@@ -98,12 +100,12 @@ export class DungeonService {
       .join('\n');
   }
 
-  async processAction(message, command, params) {
+  async processAction(message, command, params, avatar) {
     const tool = this.tools.get(command);
     if (!tool) {
       // Handle unknown command with CreationTool
       try {
-        const result = await this.creationTool.execute(message, params, command);
+        const result = await this.creationTool.execute(message, params, avatar);
         await this.dungeonLog.logAction({
           channelId: message.channel.id,
           action: command,
@@ -120,7 +122,7 @@ export class DungeonService {
     }
 
     try {
-      const result = await tool.execute(message, params);
+      const result = await tool.execute(message, params, avatar);
       await this.dungeonLog.logAction({
         channelId: message.channel.id,
         action: command,
@@ -139,6 +141,7 @@ export class DungeonService {
     this.tools.set('attack', new AttackTool(this));
     this.tools.set('defend', new DefendTool(this));
     this.tools.set('move', new MoveTool(this));
+    this.tools.set('remember', new RememberTool(this));
   }
 
   async getAvatarLocation(avatarId) {

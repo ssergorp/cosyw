@@ -3,7 +3,7 @@ export class BaseTool {
     this.dungeonService = dungeonService;
   }
 
-  async execute(message, params) {
+  async execute(avatar, message, params) {
     throw new Error('Tool must implement execute method');
   }
 

@@ -52,7 +52,6 @@ export class MessageHandler {
         const avatar = await this.avatarService.getAvatarById(avatarId);
         // Skip if already processing this avatar for this channel
         const processingKey = `${channelId}-${avatar._id}`;
-        console.log(processingKey);
         if (this.processingMessages.has(processingKey)) {
           this.logger.debug(`Skipping already processing response: ${processingKey}`);
           return;
