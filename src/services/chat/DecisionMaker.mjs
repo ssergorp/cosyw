@@ -60,9 +60,7 @@ export class DecisionMaker {
       return !lastMessage.author.bot || Math.random() > botMessagePercentage;
     }
 
-    const avatarId = avatar._id || avatar._id;
-
-    if (!avatarId || !avatar.name) {
+    if (!avatar._id || !avatar.name) {
       this.logger.error('DecisionMaker received avatar with missing id or name:', JSON.stringify(avatar, null, 2));
       return false;
     }

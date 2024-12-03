@@ -65,6 +65,44 @@ export class AvatarGenerationService {
   }
 
 
+  async getAvatarsWithRecentMessages() {
+    try {
+      // get 1000 most recent messages
+      const collection = this.db.collection('messages');
+      // get the authorUsername ranked by count
+      const pipeline = [
+        { 
+          $match: { 
+            authorId: process.env.DISCORD_BOT_ID ? process.env.DISCORD_BOT_ID : { $exists: true } 
+          } 
+        },
+        { 
+          $group: { 
+            _id: '$authorUsername',  // Assuming you want to group by author's username
+            count: { $sum: 1 } 
+          } 
+        },
+        { 
+          $sort: { count: -1 } 
+        },
+        { 
+          $limit: 1000 
+        }
+      ];
+
+      const messages = await collection.aggregate(pipeline).toArray();
+      // get the top 10 authors 
+      const topAuthors = messages.map(mention => mention._id).slice(0, 100);
+      // get the avatars of the top 10 authors
+      const avatars = await this.db.collection(this.AVATARS_COLLECTION).find({ name: { $in: topAuthors } }).toArray();
+      return avatars.slice(0, 13);
+    } catch (error) {
+      this.logger.error(`Error fetching avatars with recent messages: ${error.message}`);
+      return [];
+    }
+  }
+
+
   avatarCache = [];
   async getAllAvatars(includeStatus = 'alive') {
     if (this.avatarCache.length > 0) {
@@ -140,11 +178,6 @@ export class AvatarGenerationService {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
-  }
-
-  async getMentionedAvatars(message) {
-    const avatars = await this.getAllAvatars();
-    return avatars.filter(avatar => message.includes(avatar.name));
   }
 
   async getAvatar(name) {

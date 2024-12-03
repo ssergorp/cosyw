@@ -191,16 +191,12 @@ async function handleCreateCommand(message, args) {
 
     // Update the summon existing avatar logic
     if (existingAvatar) {
-      const avatarId = existingAvatar._id?.toString();
-      if (!avatarId) {
-        throw new Error('Avatar has no valid ID');
-      }
 
       await reactToMessage(client, message.channel.id, message.id, existingAvatar.emoji || '🔮');
 
 
       // Update database position
-      await chatService.dungeonService.updateAvatarPosition(avatarId, message.channel.id);
+      await chatService.dungeonService.updateAvatarPosition(existingAvatar._id, message.channel.id);
 
       existingAvatar.channelId = message.channel.id;
       await avatarService.updateAvatar(existingAvatar);

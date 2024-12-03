@@ -6,7 +6,7 @@ export class MessageHandler {
     this.avatarService = avatarService;
     this.logger = logger;
     this.RECENT_MESSAGES_CHECK = 10;
-    this.PROCESS_INTERVAL = 3 * 10000; // 30 seconds
+    this.PROCESS_INTERVAL = 1 * 10000; // 30 seconds
     this.ACTIVE_CHANNEL_WINDOW = 5 * 60 * 1000; // 5 minutes
     this.db = chatService.db;
     this.messagesCollection = this.db.collection('messages');
@@ -48,9 +48,19 @@ export class MessageHandler {
       const latestMessage = messages[messages.length - 1];
 
       const recentAvatars = await this.chatService.getLastMentionedAvatars(messages, avatarsInChannel);
+      const latestAvatars = await this.chatService.getLastMentionedAvatars([latestMessage], avatarsInChannel);
+      // shuffle(recentAvatars);
+      recentAvatars.sort(t => Math.random() - 0.5);
+
+      // deduplicate
+      const recentAvatarSet = new Set([...latestAvatars, ...recentAvatars]);
       
-      recentAvatars.forEach(async (avatarId) => {
-        const avatar = await this.avatarService.getAvatarById(avatarId);
+      [...Array.from(recentAvatarSet)].forEach(async (avatarId) => {
+        const avatar =  avatarsInChannel.find(a => a._id === avatarId);
+        if (!avatar) {
+          this.logger.error(`Avatar not found in channel: ${avatarId}`);
+          return;
+        }
         // Skip if already processing this avatar for this channel
         const processingKey = `${channelId}-${avatar._id}`;
         if (this.processingMessages.has(processingKey)) {

@@ -9,12 +9,10 @@ export class MoveTool extends BaseTool {
       throw new Error('Discord client is required for MoveTool');
     }
     this.locationService = new LocationService(dungeonService.client, dungeonService.aiService);
-    this.temporaryMoves = new Map(); // Track temporary moves for mentioned avatars
   }
 
-  async execute(message, params) {
-    const avatarId = message.author.id;
-    
+  async execute(message, params, avatar) {
+  
 
     if (!message.channel.guild) {
       return "This command can only be used in a guild!";
@@ -32,7 +30,7 @@ export class MoveTool extends BaseTool {
     }
 
     try {
-      const currentLocation = await this.dungeonService.getAvatarLocation(avatarId);
+      const currentLocation = await this.dungeonService.getAvatarLocation(avatar._id);
       const newLocation = await this.locationService.findOrCreateLocation(
         message.channel.guild, 
         destination,
@@ -41,29 +39,6 @@ export class MoveTool extends BaseTool {
 
       if (!newLocation) {
         return "Failed to find or create that location!";
-      }
-
-      let avatar = await this.dungeonService.getAvatar(avatarId);
-      if (!avatar) {
-        const user = await this.dungeonService.client.users.fetch(avatarId);
-        await this.dungeonService.avatarService.createAvatar({
-          id: avatarId,
-          name: user.username,
-          personality: 'mysterious traveler',
-          imageUrl: user.displayAvatarURL()
-        });
-        avatar = await this.dungeonService.getAvatar(avatarId);
-      }
-
-      // Store original location if this is a mention-based move
-      if (message.mentions?.has(avatarId)) {
-        this.temporaryMoves.set(avatarId, {
-          originalLocation: currentLocation,
-          timestamp: Date.now()
-        });
-      } else {
-        // Clear any temporary move data if this is a deliberate move
-        this.temporaryMoves.delete(avatarId);
       }
 
       // Handle departure message
@@ -80,7 +55,7 @@ export class MoveTool extends BaseTool {
       }
 
       // Update position and set maximum attention in new location
-      await this.dungeonService.updateAvatarPosition(avatarId, newLocation.channel.id);
+      await this.dungeonService.updateAvatarPosition(avatar._id, newLocation.channel.id);
 
       // Generate and send arrival message
       try {

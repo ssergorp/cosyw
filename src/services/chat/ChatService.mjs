@@ -50,8 +50,6 @@ export class ChatService {
 
     this.REFLECTION_INTERVAL = 1 * 3600000; // 1 hour
     this.reflectionTimer = 0;
-    this.AMBIENT_CHAT_INTERVAL = process.env.AMBIENT_CHAT_INTERVAL || 5 * 60000;
-    this.guildTracking = new Map(); // guildId -> lastActivity timestamp
     this.avatarThreads = new Map(); // guildId -> avatarId -> threadId
     this.lastActiveGuild = new Map(); // avatarId -> guildId
 
@@ -77,7 +75,7 @@ export class ChatService {
     this.dungeonProcessor = new DungeonProcessor(this.dungeonService, this.logger);
 
     // Remove complex tracking properties
-    this.AMBIENT_CHECK_INTERVAL = 10 * 1000; // Check for ambient responses every minute
+    this.AMBIENT_CHECK_INTERVAL = 1 * 60 * 1000; // Check for ambient responses every minute
   }
 
   async setupWithRetry(attempt = 1) {
@@ -130,10 +128,11 @@ export class ChatService {
       await this.setupAvatarChannelsAcrossGuilds();
       await this.dungeonService.initializeDatabase(); // Add this line
       this.setupReflectionInterval();
+      // update active avatars
+      await this.UpdateActiveAvatars();
+      
       this.logger.info('ChatService setup completed');
 
-      // update active avatars
-      this.UpdateActiveAvatars();
     } catch (error) {
       this.logger.error('Setup failed:', error);
       throw error;
@@ -160,39 +159,27 @@ export class ChatService {
             mentionedAvatars.add(avatar._id);
           }
         }
-        if (mentionedAvatars.size >= 3) {
-          break;
-        }
       }
       return [...mentionedAvatars];
   }
 
   // find the 12 most mentioned 
   async getTopMentions(messages, avatars) {
-    const mentions = new Map();
+    const avatarMentions = new Map();
+    for (const avatar of avatars) {
+      avatarMentions.set(avatar._id, 0);
+    }
+
     for (const message of messages) {
-      const mentionedAvatars = await this.avatarService.getMentionedAvatars(message.content);
-      for (const avatar of mentionedAvatars) {
-        if (mentions.has(avatar._id)) {
-          mentions.set(avatar._id, mentions.get(avatar._id) + 1);
-        } else {
-          mentions.set(avatar._id, 1);
+      for (const avatar of avatars) {
+        if (message.content.includes(avatar.name)) {
+          avatarMentions.set(avatar._id, avatarMentions.get(avatar._id) + 1);
         }
       }
     }
 
-    // if there are no mentions, select a hundred random avatars
-    if (mentions.size === 0) {
-      return avatars
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 12)
-        .map(avatar => avatar._id);
-    }
-
-    return [...mentions.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .slice(0, 12)
-      .map(([_id]) => _id);
+    const sortedAvatars = [...avatarMentions.entries()].sort((a, b) => b[1] - a[1]);
+    return sortedAvatars.map(([avatarId, count]) => avatars.find(a => a._id === avatarId));
   }
 
   // get the most recent limit messages prior to timestamp if provided or now
@@ -217,35 +204,30 @@ export class ChatService {
   }
 
   async UpdateActiveAvatars() {
-    const avatars = await this.avatarService.getAllAvatars();
-    const messages = await this.getRecentMessagesFromDatabase(null, 100);
+    const avatars = await this.avatarService.getAvatarsWithRecentMessages();
+    const messages = await this.getRecentMessagesFromDatabase(null, 1000);
     const topAvatars = await this.getTopMentions(messages, avatars);
 
-    // shuffle the avatars
-    topAvatars.sort(() => Math.random() - 0.5);
 
-    // discard the bottom 6
-    topAvatars.splice(6);
-
+    const replyAvatars = topAvatars.slice(0, 12);
     // respond as each of the top 6 avatars
-    for (const avatarId of topAvatars) {
-      const avatar = avatars.find(a => a.id === avatarId);
-      if (!avatar) {
-        this.logger.error(`Avatar ${avatarId} not found`);
-        continue;
-      }
-      const channel = this.client.channels.cache.get(avatar.channelId);
+    for (const avatar of replyAvatars) {
+      const channel = await this.client.channels.cache.get(avatar.channelId);
       if (!channel) {
-        this.logger.error(`Channel ${avatar.channelId} not found`);
+        const channel = await this.client.channels.cache.find(c => c.name === 'Moonstone Sanctum');
+        this.logger.error(`${avatar.name}: channel ${avatar.channelId} not found`);
+        await this.dungeonService.processAction({
+          channel,
+          author: { username: avatar.name }
+        }, 'move', 'moonstone sanctum'.split(' '), avatar);
         continue;
       }
 
       try {
-        await this.respondAsAvatar(channel, avatar, false);
+        await this.respondAsAvatar(channel, avatar, Math.random() < 0.1 || false);
       } catch (error) {
         this.logger.error(`Error responding as avatar ${avatar.name}: ${error.message}`);
       }
-
     }
 
     // schedule the next update
@@ -263,7 +245,7 @@ export class ChatService {
       this.logger.info(`Attempting to respond as avatar ${avatar.name} in channel ${channel.id} (force: ${force})`);
       let decision = true;
       try {
-        decision = await this.decisionMaker.shouldRespond(channel, avatar, this.client);
+        decision = force || await this.decisionMaker.shouldRespond(channel, avatar, this.client);
       } catch (error) {
         this.logger.error(`Error in decision maker: ${error.message}`);
       }
@@ -274,7 +256,6 @@ export class ChatService {
       if (shouldRespond) {
         this.logger.info(`${avatar.name} decided to respond in ${channel.id}`);
         await this.conversationHandler.sendResponse(channel, avatar);
-        this.updateLastActiveGuild(avatar._id, channel.guild.id);
         // Track the response in DecisionMaker
         this.decisionMaker.trackResponse(channel.id, avatar._id);
       }
@@ -310,7 +291,6 @@ export class ChatService {
       }
 
       this.logger.info('✅ ChatService started.');
-      this.interval = setIntervalAsync(() => this.checkMessages(), this.AMBIENT_CHAT_INTERVAL);
     } catch (error) {
       this.logger.error(`Failed to start ChatService: ${error.message}`);
       throw error;
@@ -354,8 +334,6 @@ export class ChatService {
           });
         }
 
-        this.guildTracking.set(guildId, Date.now());
-
         if (!this.avatarThreads.has(guildId)) {
           this.avatarThreads.set(guildId, new Map());
         }
@@ -363,11 +341,6 @@ export class ChatService {
     } catch (error) {
       this.logger.error('Failed to setup avatar channels:', error);
     }
-  }
-
-  updateLastActiveGuild(avatarId, guildId) {
-    this.lastActiveGuild.set(avatarId, guildId);
-    this.guildTracking.set(guildId, Date.now());
   }
 
   async generateReflection(avatar) {
