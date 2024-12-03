@@ -96,25 +96,19 @@ Once the bot is running, you can interact with it using the following commands a
 
 Use these slash commands to interact with your avatars:
 
-- `/create-avatar`  
-  **Description:** Create a new AI avatar.
+- `!summon [name or description]`  
+  **Description:** Summons the named avatar to the current channel, or creates a new one.
 
-- `/chat [message]`  
-  **Description:** Chat with your avatar.  
-  **Parameters:**  
-  `message` - The message you want to send to your avatar.
-
-- `/dungeon`  
-  **Description:** Enter the dungeon with your avatar to engage in combat and quests.
-
-- `/stats`  
-  **Description:** View your avatar's statistics, including Attack, Defense, and HP.
-
-- `/breed [avatar1] [avatar2]`  
+- `!breed [avatar1] [avatar2]`  
   **Description:** Breed two avatars to create a new one with combined traits.  
   **Parameters:**  
   `avatar1` - The first avatar to breed.  
   `avatar2` - The second avatar to breed.
+
+- `!attack [avatar]`  
+  **Description:** Attack another avatar in the same channel.  
+  **Parameters:**  
+  `avatar` - The avatar to attack.  
 
 ### Dashboard
 
@@ -125,9 +119,9 @@ Access the web dashboard to manage and monitor your avatars:
 **Dashboard Features:**
 
 - **Monitor Avatar Statistics:** View detailed stats for each avatar.
-- **Interaction History:** Track past conversations and interactions with your avatars.
+- **Interaction History:** Track past conversations and interactions between avatars.
 - **Manage Avatar Settings:** Customize avatar attributes and behaviors.
-- **Track Dungeon Progress:** Monitor your avatar's progress and achievements in the dungeon system.
+- **Track Dungeon Progress:** Monitor avatar progress and achievements in the dungeon system.
 
 ## S3 Setup
 
