@@ -77,7 +77,7 @@ export class ChatService {
     this.dungeonProcessor = new DungeonProcessor(this.dungeonService, this.logger);
 
     // Remove complex tracking properties
-    this.AMBIENT_CHECK_INTERVAL = 60000; // Check for ambient responses every minute
+    this.AMBIENT_CHECK_INTERVAL = 10 * 1000; // Check for ambient responses every minute
   }
 
   async setupWithRetry(attempt = 1) {
@@ -249,7 +249,7 @@ export class ChatService {
     }
 
     // schedule the next update
-    setTimeout(() => this.UpdateActiveAvatars(), 15 * 60000);
+    setTimeout(() => this.UpdateActiveAvatars(), this.AMBIENT_CHECK_INTERVAL);
   }
 
   async respondAsAvatar(channel, avatar, force = false) {

@@ -211,6 +211,11 @@ async function handleCreateCommand(message, args) {
       return;
     }
 
+    if (!message.author.bot) {
+      replyToMessage(message.channel.id, message.id, '❌ Summoning orb not found.');
+      return;
+    }
+
     // If no existing avatar found, proceed with creating new one
     // If no prompt provided, check for default Arweave prompt URL in env
     if (!prompt && process.env.DEFAULT_AVATAR_PROMPT_URL) {
@@ -364,6 +369,10 @@ async function handleCommands(message, args) {
   }
 
   if (message.content.toLowerCase().startsWith('!attack ')) {
+    if (!message.author.bot) {
+      replyToMessage(message.channel.id, message.id, '❌ Sword of violence not found.');
+      return;
+    }
     const args = message.content.slice(8).split(' ');
     await reactToMessage(client, message.channel.id, message.id, '⚔️');
     await handleAttackCommand(message, args);
@@ -371,8 +380,12 @@ async function handleCommands(message, args) {
   }
 
   if (message.content.startsWith('!breed')) {
+    if (!message.author.bot) {
+      replyToMessage(message.channel.id, message.id, '❌ Bow of cupidity not found.');
+      return;
+    }
     const args = message.content.slice(6).split(' ');
-    await reactToMessage(client, message.channel.id, message.id, '🔮');
+    await reactToMessage(client, message.channel.id, message.id, '🏹');
     await handleBreedCommand(message, args);
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
@@ -388,7 +401,7 @@ client.on('messageCreate', async (message) => {
     // Handle commands first
     if (message.content.startsWith('!')) {
       const [command, ...args] = message.content.slice(1).split(' ');
-      await handleCommands(message, args);
+      handleCommands(message, args);
       return;
     }
 
