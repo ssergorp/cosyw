@@ -1,7 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb'; // Added ObjectId for ID handling
 import models from '../src/models.config.mjs';
+import avatarRoutes from './routes/avatars.mjs';
+import tribeRoutes from './routes/tribes.mjs';
 
 const app = express();
 const port = process.env.PORT || 3080;
@@ -14,7 +16,7 @@ const mongoClient = new MongoClient(process.env.MONGO_URI);
 
 // Connect to MongoDB once during server startup
 let db;
-(async () => {
+await (async () => {
   try {
     await mongoClient.connect();
     db = mongoClient.db('cosyworld2');
@@ -23,7 +25,10 @@ let db;
     console.error('Failed to connect to MongoDB:', error);
     process.exit(1); // Exit process with failure
   }
-})();
+})().catch(error => {
+  console.error('MongoDB connection error:', error);
+  process.exit(1); // Exit process with failure
+});
 
 // Remove TIER_THRESHOLDS constant
 
@@ -51,6 +56,9 @@ function escapeRegExp(string) {
 }
 
 // API Routes
+app.use('/api/avatars', avatarRoutes(db));
+app.use('/api/tribes', tribeRoutes(db));
+
 app.get('/api/leaderboard', async (req, res) => {
   const limit = parseInt(req.query.limit) || 24;
   const lastMessageCount = parseInt(req.query.lastMessageCount);
@@ -58,17 +66,15 @@ app.get('/api/leaderboard', async (req, res) => {
   const tierFilter = req.query.tier;
 
   try {
-    // Use the established db connection
-    // Ensure 'db' is initialized
     if (!db) {
       throw new Error('Database not connected');
     }
 
-    // Get total count of unique users first
+    // Get total count of unique users first (case insensitive)
     const totalCountResult = await db.collection('messages').aggregate([
       {
         $group: {
-          _id: '$authorUsername',
+          _id: { $toLower: '$authorUsername' }
         }
       },
       {
@@ -78,55 +84,94 @@ app.get('/api/leaderboard', async (req, res) => {
 
     const totalCount = totalCountResult[0]?.total || 0;
 
-    // Main aggregation pipeline
+    // Main aggregation pipeline with case-insensitive grouping
     const pipeline = [
       {
         $group: {
-          _id: '$authorUsername',
+          _id: { $toLower: '$authorUsername' }, // Group by lowercase name
           messageCount: { $sum: 1 },
-          originalName: { $first: '$authorUsername' },
+          originalNames: { $addToSet: '$authorUsername' }, // Keep track of all case variations
           lastMessage: { $max: '$timestamp' },
           recentMessages: {
             $push: {
-              content: '$content',
-              timestamp: '$timestamp'
+              $cond: {
+                if: { $gte: ["$timestamp", { $subtract: [new Date(), 1000 * 60 * 60 * 24] }] },
+                then: {
+                  content: { $substr: ["$content", 0, 200] },
+                  timestamp: "$timestamp"
+                },
+                else: null
+              }
             }
           }
         }
       },
-      // Always lookup avatars
+      // Project stage remains similar but include originalNames
+      {
+        $project: {
+          messageCount: 1,
+          lastMessage: 1,
+          originalNames: 1, // Keep the original names array
+          recentMessages: {
+            $slice: [
+              {
+                $filter: {
+                  input: "$recentMessages",
+                  as: "msg",
+                  cond: { $ne: ["$$msg", null] }
+                }
+              },
+              5
+            ]
+          }
+        }
+      },
+      // Modified avatar lookup to use case-insensitive match
       {
         $lookup: {
           from: 'avatars',
-          let: { name: '$originalName' },
+          let: { normalized_name: '$_id' },
           pipeline: [
             {
               $match: {
                 $expr: {
-                  $eq: [
-                    { $strcasecmp: ['$name', '$$name'] }, 0
-                  ]
+                  $eq: [{ $toLower: '$name' }, '$$normalized_name']
                 }
               }
             },
-            { $limit: 1 }
+            {
+              $project: {
+                _id: 1,
+                name: 1,
+                emoji: 1,
+                model: 1,
+                lives: 1,
+                imageUrl: 1,
+                description: { $substr: ['$description', 0, 500] },
+                dynamicPersonality: { $substr: ['$dynamicPersonality', 0, 500] },
+                status: 1,
+                createdAt: 1
+              }
+            }
           ],
           as: 'avatarInfo'
         }
       },
-      // Always unwind avatarInfo
-      {
-        $unwind: {
-          path: '$avatarInfo',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      // Add dungeon stats lookup
+      // Add dungeon stats with limited fields
       {
         $lookup: {
           from: 'dungeon_stats',
           localField: 'avatarInfo._id',
           foreignField: 'avatarId',
+          pipeline: [
+            {
+              $project: {
+                attack: 1,
+                defense: 1,
+                hp: 1
+              }
+            }
+          ],
           as: 'dungeonStats'
         }
       },
@@ -170,40 +215,53 @@ app.get('/api/leaderboard', async (req, res) => {
     // Add sorting and pagination
     pipeline.push({ $sort: { messageCount: -1, _id: 1 } });
 
-    // Add cursor conditions if we have a last message
+    // Update cursor conditions for more precise pagination
     if (lastMessageCount && lastId) {
       pipeline.push({
         $match: {
           $or: [
             { messageCount: { $lt: lastMessageCount } },
             {
-              messageCount: lastMessageCount,
-              _id: { $gt: lastId }
+              $and: [
+                { messageCount: lastMessageCount },
+                { _id: { $gt: lastId } }
+              ]
             }
           ]
         }
       });
     }
 
-    // Add limit
-    pipeline.push({ $limit: limit + 1 });
+    // Add sorting first, then limit
+    pipeline.push(
+      { 
+        $sort: { 
+          messageCount: -1, 
+          _id: 1  // Ensure consistent ordering for same message counts
+        }
+      },
+      { 
+        $limit: limit + 1 
+      }
+    );
 
     const messageStats = await db.collection('messages')
-      .aggregate(pipeline).toArray();
+      .aggregate(pipeline, { 
+        allowDiskUse: true // Add this option for large datasets
+      }).toArray();
 
     const hasMore = messageStats.length > limit;
     const avatarsToReturn = messageStats.slice(0, limit);
 
     // Get avatar details for the paginated results
     const avatarDetailsArray = await Promise.all(avatarsToReturn.map(async (stat) => {
-      const avatar = stat.avatarInfo;
-
+      const avatar = stat.avatarInfo[0]; // Take first matching avatar
       if (!avatar) return null;
 
-      // Re-add fetching lastReflection with escaped name
-      const escapedName = escapeRegExp(stat.originalName);
+      // Use the normalized name for reflections lookup
+      const normalizedName = stat._id;
       const lastReflection = await db.collection('reflections').findOne(
-        { name: { $regex: `^${escapedName}$`, $options: 'i' } }, // Case-insensitive exact match
+        { name: { $regex: `^${normalizedName}$`, $options: 'i' } },
         { 
           sort: { timestamp: -1 },
           projection: { reflectionContent: 1, timestamp: 1 }
@@ -224,19 +282,23 @@ app.get('/api/leaderboard', async (req, res) => {
         lives: avatar.lives, // Include lives
         attack: dungeonStats.attack || 0,
         defense: dungeonStats.defense || 0,
-        hp: dungeonStats.hp || 0
+        hp: dungeonStats.hp || 0,
+        originalNames: stat.originalNames // Include all name variations
       };
     }));
 
     // Filter out null values and send response
     const validAvatars = avatarDetailsArray.filter(avatar => avatar !== null);
     
+    // Update the cursor values from the last item we're actually returning
+    const lastItem = avatarsToReturn[avatarsToReturn.length - 1];
+
     res.json({
       avatars: validAvatars,
       hasMore,
       total: totalCount,
-      lastMessageCount: validAvatars.length ? validAvatars[validAvatars.length - 1].messageCount : null,
-      lastId: validAvatars.length ? validAvatars[validAvatars.length - 1]._id : null
+      lastMessageCount: lastItem ? lastItem.messageCount : null,
+      lastId: lastItem ? lastItem._id : null
     });
   } catch (error) {
     console.error('Leaderboard error:', error);
@@ -267,9 +329,17 @@ app.get('/api/avatar/:id/reflections', async (req, res) => {
       { projection: { attack: 1, defense: 1, hp: 1 } }
     );
 
+    // Fetch recent messages if needed
+    const recentMessages = await db.collection('messages')
+      .find({ authorId: avatarId })
+      .sort({ timestamp: -1 })
+      .limit(5)
+      .toArray();
+
     res.json({
       reflections,
-      dungeonStats: dungeonStats || { attack: 0, defense: 0, hp: 0 }
+      dungeonStats: dungeonStats || { attack: 0, defense: 0, hp: 0 },
+      recentMessages
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -277,13 +347,10 @@ app.get('/api/avatar/:id/reflections', async (req, res) => {
   // Remove the finally block that closes the connection
 });
 
-// Restore the /api/dungeon/log endpoint
+// Modify the /api/dungeon/log endpoint to include imageUrl in combat log entries
 app.get('/api/dungeon/log', async (req, res) => {
   try {
-    // Use the established db connection
-    if (!db) {
-      throw new Error('Database not connected');
-    }
+    if (!db) throw new Error('Database not connected');
 
     const combatLog = await db.collection('dungeon_log')
       .find({})
@@ -291,20 +358,29 @@ app.get('/api/dungeon/log', async (req, res) => {
       .limit(50)
       .toArray();
 
-    // Enrich combat log with avatar details
+    // Enrich combat log with avatar details including imageUrl
     const enrichedLog = await Promise.all(combatLog.map(async (entry) => {
-      // Escape the actor's name to prevent regex issues
       const escapedActor = escapeRegExp(entry.actor);
-      const avatar = await db.collection('avatars').findOne(
-        { name: { $regex: `^${escapedActor}$`, $options: 'i' } }, // Case-insensitive exact match
-        { projection: { name: 1, lives: 1 } }
-      );
+      const escapedTarget = entry.target ? escapeRegExp(entry.target) : null;
+      
+      const [actor, target] = await Promise.all([
+        db.collection('avatars').findOne(
+          { name: { $regex: `^${escapedActor}$`, $options: 'i' } },
+          { projection: { name: 1, imageUrl: 1 } }
+        ),
+        escapedTarget ? db.collection('avatars').findOne(
+          { name: { $regex: `^${escapedTarget}$`, $options: 'i' } },
+          { projection: { name: 1, imageUrl: 1 } }
+        ) : null
+      ]);
 
       return {
         ...entry,
-        avatarName: avatar ? avatar.name : entry.actor,
-        avatarLives: avatar?.lives || 3, // Default to 3 lives if not found
-        locationName: entry.target
+        avatarName: actor?.name || entry.actor,
+        imageUrl: actor?.imageUrl || null,
+        targetName: target?.name || entry.target,
+        targetImageUrl: target?.imageUrl || null,
+        locationName: entry.location || entry.target // fallback to target if location not specified
       };
     }));
 

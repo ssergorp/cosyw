@@ -1,5 +1,11 @@
 const { useState, useEffect } = React;
 
+// Add this utility function near the top
+function sanitizeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return !isNaN(num) && isFinite(num) ? num : fallback;
+}
+
 function TierBadge({ tier }) {
   const colors = {
     S: 'bg-purple-600',  // legendary
@@ -13,6 +19,42 @@ function TierBadge({ tier }) {
     <span className={`${colors[tier]} px-2 py-1 rounded text-xs font-bold`}>
       Tier {tier}
     </span>
+  );
+}
+
+function ProgressRing({ value, maxValue, size = 120, strokeWidth = 8, color = '#60A5FA', centerContent }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const progress = value / maxValue;
+  const strokeDashoffset = circumference * (1 - progress);
+
+  return (
+    <div className="relative inline-flex items-center justify-center">
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#374151"
+          strokeWidth={strokeWidth}
+          fill="transparent"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          fill="transparent"
+          className="transition-all duration-500 ease-out"
+        />
+      </svg>
+      <div className="absolute text-center">
+        {centerContent}
+      </div>
+    </div>
   );
 }
 
@@ -65,14 +107,23 @@ function AvatarDetailModal({ avatar, onClose }) {
 
   if (!avatar) return null;
 
-  function generateProgressBar(value, increment, emoji) {
-    return emoji.repeat(Math.floor(value / increment));
-  }
+  const { 
+    attack = 0, 
+    defense = 0, 
+    hp = 0, 
+    lives = null,
+    status
+  } = avatar;
 
-  const { attack, defense, hp } = dungeonStats;
-  const attackBar = generateProgressBar(attack, 5, '⚔️');
-  const defenseBar = generateProgressBar(defense, 5, '🛡️');
-  const hpBar = generateProgressBar(hp, 33, '❣️'); // Assuming max HP is 1000
+  // Sanitize all numerical values
+  const safeHP = sanitizeNumber(hp);
+  const safeLives = sanitizeNumber(lives);
+  const safeAttack = sanitizeNumber(dungeonStats.attack || attack);
+  const safeDefense = sanitizeNumber(dungeonStats.defense || defense);
+  const currentHP = Math.min(Math.max(safeHP, 0), 100);
+
+  const isDead = lives === 0;
+  const showHPRing = lives !== null;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto">
@@ -89,8 +140,39 @@ function AvatarDetailModal({ avatar, onClose }) {
               <p className="text-gray-400">Messages: {avatar.messageCount}</p>
               <p className="text-gray-500">Created: {formatDate(avatar.createdAt)}</p>
               {/* Display Dungeon Stats */}
-              <div className="mt-2">
-                <p className="text-gray-300">{attackBar}|{defenseBar}|{hpBar}</p>
+              <div className="mt-4 flex items-center gap-6">
+                {isDead ? (
+                  <div className="text-red-500 text-2xl font-bold">☠️ Dead</div>
+                ) : showHPRing ? (
+                  <ProgressRing 
+                    value={currentHP}
+                    maxValue={100}
+                    size={100}
+                    color={currentHP < 33 ? '#EF4444' : '#60A5FA'}
+                    centerContent={
+                      <div>
+                        <div className="text-2xl font-bold">{currentHP}</div>
+                        <div className="text-sm text-gray-400">{safeLives} ❣️</div>
+                      </div>
+                    }
+                  />
+                ) : null}
+                <div className="space-y-2">
+                  {safeAttack > 0 && (
+                    <div className="flex gap-2 items-center">
+                      <span className="text-gray-400 w-20">Attack:</span>
+                      <span>{Array(Math.min(Math.floor(safeAttack/5), 5)).fill('⚔️').join('')}</span>
+                      <span className="text-gray-500">({safeAttack})</span>
+                    </div>
+                  )}
+                  {safeDefense > 0 && (
+                    <div className="flex gap-2 items-center">
+                      <span className="text-gray-400 w-20">Defense:</span>
+                      <span>{Array(Math.min(Math.floor(safeDefense/5), 5)).fill('🛡️').join('')}</span>
+                      <span className="text-gray-500">({safeDefense})</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -148,18 +230,30 @@ function AvatarDetailModal({ avatar, onClose }) {
 }
 
 function AvatarCard({ avatar, onSelect }) {
-  const renderLives = () => {
-    if (avatar.status === 'dead') {
-      return <span className="text-red-500">☠️ Dead</span>;
-    }
-    return Array(avatar.lives || 0).fill('❣️').join('');
-  };
+  const { 
+    attack = 0, 
+    defense = 0, 
+    hp = 0, 
+    lives = null,
+    status
+  } = avatar;
+
+  // Sanitize all numerical values
+  const safeHP = sanitizeNumber(hp);
+  const safeLives = sanitizeNumber(lives);
+  const safeAttack = sanitizeNumber(attack);
+  const safeDefense = sanitizeNumber(defense);
+  const currentHP = Math.min(Math.max(safeHP, 0), 100); // Clamp between 0-100
+
+  // Only show HP ring if lives is defined, show dead status if lives is 0
+  const isDead = lives === 0;
+  const showHPRing = lives !== null;
 
   return (
     <div 
       onClick={() => onSelect(avatar)}
       className={`bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-700 transition-colors ${
-        avatar.status === 'dead' ? 'opacity-50' : ''
+        isDead ? 'opacity-50' : ''
       }`}
     >
       <div className="flex items-center space-x-4">
@@ -169,15 +263,41 @@ function AvatarCard({ avatar, onSelect }) {
           className="w-16 h-16 rounded-full object-cover"
         />
         <div className="flex-1">
-          <div className="flex justify-between items-center">
-            <h3 className="text-xl font-bold">{avatar.name} {avatar.emoji}</h3>
+          <div className="flex justify-between items-start">
+            <div>
+              <h3 className="text-xl font-bold">{avatar.name} {avatar.emoji}</h3>
+              <p className="text-gray-400">Messages: {avatar.messageCount}</p>
+            </div>
             <TierBadge tier={avatar.tier} />
           </div>
-          <p className="text-gray-400">Messages: {avatar.messageCount}</p>
-          <p className="text-gray-400">{renderLives()}</p>
-          <p className="text-sm text-gray-500">
-            Active: {new Date(avatar.lastMessage).toLocaleDateString()}
-          </p>
+          
+          <div className="mt-2 flex items-center gap-4">
+            <div className="flex gap-2 text-sm items-center">
+              {safeAttack > 0 && (
+                <span>{Array(Math.min(Math.floor(safeAttack/5), 5)).fill('⚔️').join('')}</span>
+              )}
+              {safeDefense > 0 && (
+                <span>{Array(Math.min(Math.floor(safeDefense/5), 5)).fill('🛡️').join('')}</span>
+              )}
+            </div>
+            {isDead ? (
+              <span className="text-red-500 text-sm">☠️ Dead</span>
+            ) : showHPRing && (
+              <ProgressRing 
+                value={currentHP}
+                maxValue={100}
+                size={40}
+                strokeWidth={4}
+                color={currentHP < 33 ? '#EF4444' : '#60A5FA'}
+                centerContent={
+                  <div className="text-xs">
+                    <div className="font-bold">{safeLives}</div>
+                    <div className="text-gray-400">❣️</div>
+                  </div>
+                }
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -259,6 +379,151 @@ function ViewToggle({ currentView, onViewChange }) {
       >
         Combat Log
       </button>
+      <button
+        className={`px-4 py-2 rounded ${
+          currentView === 'tribes' 
+            ? 'bg-green-600 text-white' 
+            : 'bg-gray-700 text-gray-300'
+        }`}
+        onClick={() => onViewChange('tribes')}
+      >
+        Tribes
+      </button>
+    </div>
+  );
+}
+
+function TribeCard({ tribe, onSelect }) {
+  return (
+    <div 
+      onClick={() => onSelect(tribe)}
+      className="bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-700 transition-colors"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-4xl">{tribe._id}</span>
+        <span className="text-xl font-bold">{tribe.count} members</span>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {tribe.avatars.map(avatar => (
+          <img 
+            key={avatar._id}
+            src={avatar.thumbnailUrl || avatar.imageUrl} 
+            alt={avatar.name}
+            className="w-8 h-8 rounded-full object-cover"
+            title={avatar.name}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TribeDetailModal({ tribe, onClose }) {
+  const [fullTribe, setFullTribe] = useState({ tribe: [], total: 0 });
+  const [page, setPage] = useState(1);
+  const limit = 50;
+
+  useEffect(() => {
+    if (tribe) {
+      fetch(`/api/tribes/${encodeURIComponent(tribe._id)}?page=${page}&limit=${limit}`)
+        .then(res => res.json())
+        .then(setFullTribe);
+    }
+  }, [tribe, page]);
+
+  if (!tribe) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-4">
+            <span className="text-4xl">{tribe._id}</span>
+            <span className="text-xl font-bold">{tribe.count} members</span>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">×</button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          {fullTribe.tribe.map(avatar => (
+            <div key={avatar._id} className="bg-gray-700 rounded-lg p-4 flex items-center gap-3">
+              <img 
+                src={avatar.thumbnailUrl || avatar.imageUrl} 
+                alt={avatar.name}
+                className="w-12 h-12 rounded-full object-cover"
+              />
+              <div>
+                <div className="font-bold">{avatar.name}</div>
+                <div className="text-sm text-gray-400">Messages: {avatar.messageCount}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {fullTribe.total > limit && (
+          <div className="mt-6 flex justify-center gap-2">
+            {Array.from({ length: Math.ceil(fullTribe.total / limit) }).map((_, i) => (
+              <button
+                key={i}
+                onClick={() => setPage(i + 1)}
+                className={`px-3 py-1 rounded ${
+                  page === i + 1 ? 'bg-blue-600' : 'bg-gray-700'
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TribesView() {
+  const [tribes, setTribes] = useState([]);
+  const [selectedTribe, setSelectedTribe] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchTribes = async () => {
+      try {
+        const response = await fetch('/api/tribes');
+        const data = await response.json();
+        setTribes(data.tribes);
+      } catch (error) {
+        console.error('Error fetching tribes:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTribes();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="text-center py-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {tribes.map(tribe => (
+          <TribeCard 
+            key={tribe._id} 
+            tribe={tribe} 
+            onSelect={setSelectedTribe}
+          />
+        ))}
+      </div>
+      <TribeDetailModal 
+        tribe={selectedTribe} 
+        onClose={() => setSelectedTribe(null)} 
+      />
     </div>
   );
 }
@@ -366,8 +631,10 @@ function App() {
             onClose={() => setSelectedAvatar(null)} 
           />
         </>
-      ) : (
+      ) : currentView === 'combat' ? (
         <CombatLog />
+      ) : (
+        <TribesView />
       )}
     </div>
   );
