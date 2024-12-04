@@ -69,7 +69,7 @@ export class ConversationHandler {
         { role: 'user', content: prompt }
       ], { model: avatar.model });
 
-      const thread = await this.getOrCreateThread(avatar);
+      const thread = await this.getOrCreateThread(avatar, true);
       if (thread) {
         await sendAsWebhook(thread.id, narrative, avatar.name, avatar.imageUrl);
         await this.storeNarrative(thread, avatar._id, narrative);
@@ -99,7 +99,7 @@ export class ConversationHandler {
     ${memoryPrompt}`;
   }
 
-  async getOrCreateThread(avatar) {
+  async getOrCreateThread(avatar, privateThread = false) {
     try {
       const guild = this.client.guilds.cache.first();
       if (!guild) throw new Error('No guilds available');
@@ -115,6 +115,7 @@ export class ConversationHandler {
       return await avatarChannel.threads.create({
         name: threadName,
         autoArchiveDuration: 1440, // 24 hours
+        type: privateThread ? ChannelType.PrivateThread: ChannelType.PublicThread,
         reason: `Unified narrative thread for ${avatar.name}`
       });
     } catch (error) {
@@ -212,18 +213,22 @@ export class ConversationHandler {
           content: `Channel: #${context.channelName} in ${context.guildName}
           Recent messages:
             ${context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')}
-          You are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. 
+          You are ${avatar.name}. Respond to the chat in character
+           advancing your goals and keeping others engaged. 
           
-          use emojis if its funny
+          use emojis if u want
+          capitalization spelling and punctuation are not important, just have fun
+          relax any be yourself
+
           speak freely and have fun, no need to use capitals or proper spelling this is a 
 
-          only provide a single sentence response
+          
+          reply with a single short chatroom style sentence or *actions*, use emojis, be silly, in character
 
           ${avatar.name}:
           `
         }
       ], {
-        max_tokens: 256,
         model: avatar.model
       });
 

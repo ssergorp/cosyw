@@ -4,6 +4,7 @@ import { MongoClient, ObjectId } from 'mongodb'; // Added ObjectId for ID handli
 import models from '../src/models.config.mjs';
 import avatarRoutes from './routes/avatars.mjs';
 import familyRoutes from './routes/families.mjs'; // renamed from tribeRoutes
+import { generateThumbnail, ensureThumbnailDir } from './routes/avatars.mjs';
 
 const app = express();
 const port = process.env.PORT || 3080;
@@ -60,31 +61,22 @@ app.use('/api/avatars', avatarRoutes(db));
 app.use('/api/families', familyRoutes(db));
 
 app.get('/api/leaderboard', async (req, res) => {
-  const limit = parseInt(req.query.limit) || 24;
-  const lastMessageCount = parseInt(req.query.lastMessageCount);
-  const lastId = req.query.lastId;
-  const tierFilter = req.query.tier;
-
   try {
     if (!db) {
       throw new Error('Database not connected');
     }
 
-    // Get total count of unique users first (case insensitive)
-    const totalCountResult = await db.collection('messages').aggregate([
-      {
-        $group: {
-          _id: { $toLower: '$authorUsername' }
-        }
-      },
-      {
-        $count: 'total'
-      }
-    ]).toArray();
+    const limit = parseInt(req.query.limit) || 24;
+    const lastMessageCount = parseInt(req.query.lastMessageCount);
+    const lastId = req.query.lastId;
+    const tierFilter = req.query.tier;
 
-    const totalCount = totalCountResult[0]?.total || 0;
+    // Add error handling for invalid parameters
+    if (isNaN(limit) || limit <= 0) {
+      return res.status(400).json({ error: 'Invalid limit parameter' });
+    }
 
-    // Main aggregation pipeline with case-insensitive grouping
+    // Add null checks before accessing properties
     const pipeline = [
       {
         $group: {
@@ -250,81 +242,93 @@ app.get('/api/leaderboard', async (req, res) => {
         allowDiskUse: true // Add this option for large datasets
       }).toArray();
 
+    if (!messageStats) {
+      return res.json({
+        avatars: [],
+        hasMore: false,
+        total: 0,
+        lastMessageCount: null,
+        lastId: null
+      });
+    }
+
     const hasMore = messageStats.length > limit;
     const avatarsToReturn = messageStats.slice(0, limit);
 
-    // Get avatar details for the paginated results with merged stats
-    const avatarDetailsArray = await Promise.all(avatarsToReturn.map(async (stat) => {
-      // Use originalNames array to find all matching avatars
-      const avatars = stat.avatarInfo;
-      if (!avatars.length) return null;
+    // Safely handle null values in the pipeline
+    const avatarDetailsArray = await Promise.all(
+      avatarsToReturn.map(async (stat) => {
+        if (!stat || !stat.avatarInfo) return null;
+        // Use originalNames array to find all matching avatars
+        const avatars = stat.avatarInfo;
+        if (!avatars.length) return null;
 
-      const sanitizeNumber = (num) => (typeof num === 'number' && !isNaN(num)) ? num : 0;
+        const sanitizeNumber = (num) => (num === null || isNaN(num)) ? 0 : num;
 
-      // Merge dungeonStats for all avatars
-      const mergedDungeonStats = {
-        attack: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.attack || 0)))),
-        defense: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.defense || 0)))),
-        hp: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.hp || 0))))
-      };
+        // Merge dungeonStats for all avatars
+        const mergedDungeonStats = {
+          attack: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.attack || 0)))),
+          defense: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.defense || 0)))),
+          hp: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.hp || 0))))
+        };
 
-      // Select primary avatar (highest tier, or most recent if tiers are equal)
-      const sortedAvatars = avatars.sort((a, b) => {
-        const tierA = calculateTier(a);
-        const tierB = calculateTier(b);
-        if (tierA !== tierB) {
-          return rarityToTier[tierA] > rarityToTier[tierB] ? -1 : 1;
-        }
-        return new Date(b.createdAt) - new Date(a.createdAt);
-      });
+        // Select primary avatar (highest tier, or most recent if tiers are equal)
+        const sortedAvatars = avatars.sort((a, b) => {
+          const tierA = calculateTier(a);
+          const tierB = calculateTier(b);
+          if (tierA !== tierB) {
+            return rarityToTier[tierA] > rarityToTier[tierB] ? -1 : 1;
+          }
+          return new Date(b.createdAt) - new Date(a.createdAt);
+        });
 
-      const primaryAvatar = sortedAvatars[0];
+        const primaryAvatar = sortedAvatars[0];
+        const thumbnailUrl = await generateThumbnail(primaryAvatar.imageUrl);
 
-      // Use the normalized name for reflections lookup
-      const normalizedName = stat._id;
-      const lastReflection = await db.collection('reflections').findOne(
-        { name: { $regex: `^${normalizedName}$`, $options: 'i' } },
-        { 
-          sort: { timestamp: -1 },
-          projection: { reflectionContent: 1, timestamp: 1 }
-        }
-      );
+        // Use the normalized name for reflections lookup
+        const normalizedName = stat._id;
+        const lastReflection = await db.collection('reflections').findOne(
+          { name: { $regex: `^${normalizedName}$`, $options: 'i' } },
+          { 
+            sort: { timestamp: -1 },
+            projection: { reflectionContent: 1, timestamp: 1 }
+          }
+        );
 
-      return {
-        ...primaryAvatar,
-        messageCount: stat.messageCount,
-        lastMessage: stat.lastMessage,
-        recentMessages: stat.recentMessages.slice(0, 5),
-        lastReflection: lastReflection?.reflectionContent || null,
-        lastReflectionTime: lastReflection?.timestamp || null,
-        tier: calculateTier(primaryAvatar),
-        lives: primaryAvatar.lives,
-        attack: mergedDungeonStats.attack,
-        defense: mergedDungeonStats.defense,
-        hp: mergedDungeonStats.hp,
-        originalNames: stat.originalNames,
-        alternateAvatars: sortedAvatars.slice(1) // Include other avatars
-      };
-    }));
+        return {
+          ...primaryAvatar,
+          thumbnailUrl,
+          messageCount: stat.messageCount,
+          lastMessage: stat.lastMessage,
+          recentMessages: stat.recentMessages.slice(0, 5),
+          lastReflection: lastReflection?.reflectionContent || null,
+          lastReflectionTime: lastReflection?.timestamp || null,
+          tier: calculateTier(primaryAvatar),
+          lives: primaryAvatar.lives,
+          attack: mergedDungeonStats.attack,
+          defense: mergedDungeonStats.defense,
+          hp: mergedDungeonStats.hp,
+          originalNames: stat.originalNames,
+          alternateAvatars: sortedAvatars.slice(1) // Include other avatars
+        };
+      })
+    );
 
-    // Filter out null values and send response
     const validAvatars = avatarDetailsArray.filter(avatar => avatar !== null);
-    
-    // Update the cursor values from the last item we're actually returning
     const lastItem = avatarsToReturn[avatarsToReturn.length - 1];
 
-    res.json({
+    return res.json({
       avatars: validAvatars,
       hasMore,
-      total: totalCount,
+      total: validAvatars.length,
       lastMessageCount: lastItem ? lastItem.messageCount : null,
       lastId: lastItem ? lastItem._id : null
     });
+
   } catch (error) {
     console.error('Leaderboard error:', error);
     res.status(500).json({ error: error.message });
   }
-  // Remove the finally block that closes the connection
 });
 
 app.get('/api/avatar/:id/reflections', async (req, res) => {

@@ -211,8 +211,8 @@ export async function sendAvatarProfileEmbedFromObject(avatar) {
           inline: true,
         },
         {
-          name: '🧠 Brain',
-          value: `${model || 'N/A'} (${rarity})`,
+          name: `🧠 ${rarity}`,
+          value: `${model || 'N/A'}`,
           inline: true,
         },
       )

@@ -70,11 +70,9 @@ export class AvatarGenerationService {
  * @returns {Promise<Date|null>} Last breeding date or null if never bred
  */
   async getLastBredDate(avatarId) {
-    const client = new MongoClient(process.env.MONGO_URI);
 
     try {
-      await client.connect();
-      const db = client.db();
+      const db = this.db();
 
       // Find most recent avatar where this ID is in parents array
       const lastOffspring = await db.collection('avatars')

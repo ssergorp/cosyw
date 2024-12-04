@@ -285,11 +285,11 @@ async function handleSummmonCommand(message, args, breed = false, attributes = {
       return;
     }
 
-    if (!breed && !message.author.bot) {
-      replyToMessage(message.channel.id, message.id, '❌ Summoning orb not found.');
-      await reactToMessage(client, message.channel.id, message.id, '❌');
-      return;
-    }
+    // if (message.author.username !== 'noxannihilism' && !breed && !message.author.bot) {
+    //   replyToMessage(message.channel.id, message.id, '❌ Summoning orb not found.');
+    //   await reactToMessage(client, message.channel.id, message.id, '❌');
+    //   return;
+    // }
 
     // If no existing avatar found, proceed with creating new one
     // If no prompt provided, check for default Arweave prompt URL in env
