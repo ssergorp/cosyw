@@ -120,7 +120,8 @@ async function saveMessageToDatabase(message) {
 async function handleBreedCommand(message, args, commandLine) {
   // find an avatar for each argument
   const avatars = await avatarService.getAllAvatars();
-  const mentionedAvatars = Array.from(extractMentionedAvatars(commandLine, avatars)).slice(-2);
+  const mentionedAvatars = Array.from(extractMentionedAvatars(commandLine, avatars))
+  .sort(() => Math.random() - 0.5).slice(-2);
 
   // set the breeding season based on the day of the week
   const dayOfWeek = new Date().getDay();

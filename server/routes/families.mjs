@@ -10,8 +10,6 @@ export default function(db) {
     try {
       await ensureThumbnailDir();
       
-      const minMembers = parseInt(req.query.minMembers) || 1;
-      const parentEmoji = req.query.emoji;
       const maxDepth = parseInt(req.query.maxDepth) || 999;
 
       const pipeline = [
@@ -19,8 +17,7 @@ export default function(db) {
           $match: {
             $or: [
               { parents: { $exists: false } },
-              { parents: { $size: 0 } },
-              { emoji: { $exists: true } }
+              { parents: { $size: 0 } }
             ]
           }
         },
@@ -33,24 +30,19 @@ export default function(db) {
             as: 'descendants',
             maxDepth: maxDepth - 1
           }
+        },
+        {
+          $match: {
+            $expr: { 
+              $gt: [{ $size: '$descendants' }, 0] // Only show families with descendants
+            }
+          }
         }
       ];
 
-      if (parentEmoji) {
-        pipeline.unshift({ $match: { emoji: parentEmoji } });
-      }
-
-      if (minMembers > 1) {
-        pipeline.push({
-          $match: {
-            $expr: { $gte: [{ $size: '$descendants' }, minMembers - 1] }
-          }
-        });
-      }
-
       const families = await db.collection('avatars').aggregate(pipeline).toArray();
 
-      // Add thumbnails
+      // Add thumbnails and format response
       const familiesWithThumbs = await Promise.all(
         families.map(async (family) => ({
           ...family,
@@ -58,8 +50,7 @@ export default function(db) {
           descendants: await Promise.all(
             family.descendants.map(async (member) => ({
               ...member,
-              thumbnailUrl: await generateThumbnail(member.imageUrl),
-              parentEmoji: member.parents?.length ? undefined : family.emoji
+              thumbnailUrl: await generateThumbnail(member.imageUrl)
             }))
           )
         }))

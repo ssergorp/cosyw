@@ -4,7 +4,6 @@ import { DecisionMaker } from './DecisionMaker.mjs';
 import { MessageProcessor } from './MessageProcessor.mjs';
 
 import { DungeonService } from '../dungeon/DungeonService.mjs'; // Added import
-import { DungeonProcessor } from '../dungeon/DungeonProcessor.mjs'; // Added import
 
 const RESPONSE_RATE = process.env.RESPONSE_RATE || 0.2; // 20% response rate
 
@@ -70,8 +69,6 @@ export class ChatService {
     this.responseQueue = new Map(); // channelId -> Set of avatarIds to respond
     this.responseTimeout = null;
     this.RESPONSE_DELAY = 3000; // Wait 3 seconds before processing responses
-
-    this.dungeonProcessor = new DungeonProcessor(this.dungeonService, this.logger);
 
     // Remove complex tracking properties
     this.AMBIENT_CHECK_INTERVAL = 1 * 60 * 1000; // Check for ambient responses every minute
@@ -146,7 +143,6 @@ export class ChatService {
     if (validAvatars.length !== avatars.length) {
       this.logger.warn(`${avatars.length - validAvatars.length} avatars were excluded due to missing 'id' or 'name'.`);
     }
-    await this.dungeonProcessor.checkPendingActions();
   }
 
   async getLastMentionedAvatars(messages, avatars) {

@@ -172,6 +172,66 @@ app.get('/api/leaderboard', async (req, res) => {
           path: '$dungeonStats',
           preserveNullAndEmptyArrays: true
         }
+      },
+      // Find all avatars with matching name (case insensitive)
+      {
+        $lookup: {
+          from: 'avatars',
+          let: { normalized_name: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $eq: [{ $toLower: '$name' }, '$$normalized_name']
+                }
+              }
+            },
+            {
+              $sort: { createdAt: -1 } // Most recent first
+            },
+            {
+              $group: {
+                _id: '$name',
+                primaryAvatar: { $first: '$$ROOT' }, // Most recent becomes primary
+                alternateAvatars: { $push: '$$ROOT' }, // All avatars
+                allEmojis: { $addToSet: '$emoji' }, // Collect unique emojis
+                maxAttack: { $max: '$attack' },
+                maxDefense: { $max: '$defense' },
+                maxHp: { $max: '$hp' },
+                lives: { $first: '$lives' } // Take lives from primary avatar
+              }
+            },
+            {
+              $project: {
+                _id: '$primaryAvatar._id',
+                name: '$primaryAvatar.name',
+                imageUrl: '$primaryAvatar.imageUrl',
+                model: '$primaryAvatar.model',
+                description: '$primaryAvatar.description',
+                dynamicPersonality: '$primaryAvatar.dynamicPersonality',
+                createdAt: '$primaryAvatar.createdAt',
+                emojis: '$allEmojis',
+                attack: '$maxAttack',
+                defense: '$maxDefense',
+                hp: '$maxHp',
+                lives: '$lives',
+                alternateAvatars: {
+                  $slice: [
+                    {
+                      $filter: {
+                        input: '$alternateAvatars',
+                        as: 'alt',
+                        cond: { $ne: ['$$alt._id', '$primaryAvatar._id'] }
+                      }
+                    },
+                    10
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'avatarInfo'
+        }
       }
     ];
 
@@ -283,7 +343,22 @@ app.get('/api/leaderboard', async (req, res) => {
         });
 
         const primaryAvatar = sortedAvatars[0];
-        const thumbnailUrl = await generateThumbnail(primaryAvatar.imageUrl);
+
+        // Generate thumbnails for primary and alternates
+        const [primaryThumb, alternateThumbnails] = await Promise.all([
+          generateThumbnail(primaryAvatar.imageUrl),
+          Promise.all(
+            (primaryAvatar.alternateAvatars || []).map(alt => 
+              generateThumbnail(alt.imageUrl)
+            )
+          )
+        ]);
+
+        // Enhance alternate avatars with thumbnails
+        const alternateAvatarsWithThumbs = primaryAvatar.alternateAvatars?.map((alt, i) => ({
+          ...alt,
+          thumbnailUrl: alternateThumbnails[i]
+        }));
 
         // Use the normalized name for reflections lookup
         const normalizedName = stat._id;
@@ -297,7 +372,7 @@ app.get('/api/leaderboard', async (req, res) => {
 
         return {
           ...primaryAvatar,
-          thumbnailUrl,
+          thumbnailUrl: primaryThumb,
           messageCount: stat.messageCount,
           lastMessage: stat.lastMessage,
           recentMessages: stat.recentMessages.slice(0, 5),
@@ -309,7 +384,7 @@ app.get('/api/leaderboard', async (req, res) => {
           defense: mergedDungeonStats.defense,
           hp: mergedDungeonStats.hp,
           originalNames: stat.originalNames,
-          alternateAvatars: sortedAvatars.slice(1) // Include other avatars
+          alternateAvatars: alternateAvatarsWithThumbs // Include other avatars
         };
       })
     );
@@ -398,12 +473,19 @@ app.get('/api/dungeon/log', async (req, res) => {
         ) : null
       ]);
 
+      const [actorThumb, targetThumb] = await Promise.all([
+        actor?.imageUrl ? generateThumbnail(actor.imageUrl) : null,
+        target?.imageUrl ? generateThumbnail(target.imageUrl) : null
+      ]);
+
       return {
         ...entry,
         avatarName: actor?.name || entry.actor,
         imageUrl: actor?.imageUrl || null,
+        thumbnailUrl: actorThumb,
         targetName: target?.name || entry.target,
         targetImageUrl: target?.imageUrl || null,
+        targetThumbnailUrl: targetThumb,
         locationName: entry.location || entry.target // fallback to target if location not specified
       };
     }));

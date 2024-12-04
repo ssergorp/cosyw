@@ -147,6 +147,11 @@ function AvatarDetailModal({ avatar, onClose }) {
                 />
                 <div>
                   <h2 className="text-3xl font-bold">{avatar.name} {avatar.emoji}</h2>
+                  <div className="flex gap-2 mt-2">
+                    {avatar.emojis?.map((emoji, i) => (
+                      <span key={i} className="text-2xl">{emoji}</span>
+                    ))}
+                  </div>
                   <p className="text-gray-400">Messages: {avatar.messageCount}</p>
                   <p className="text-gray-500">Created: {formatDate(avatar.createdAt)}</p>
                   {/* Display Dungeon Stats */}
@@ -295,7 +300,11 @@ function AvatarCard({ avatar, onSelect }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-bold truncate">{avatar.name}</h3>
-            <span>{avatar.emoji}</span>
+            <div className="flex gap-1">
+              {avatar.emojis?.map((emoji, i) => (
+                <span key={i}>{emoji}</span>
+              ))}
+            </div>
             <TierBadge tier={avatar.tier} />
           </div>
           <div className="flex items-center gap-2 text-sm text-gray-400">
@@ -489,28 +498,72 @@ function FamilyView() {
     );
   }
 
-  const renderFamilyTree = (family, depth = 0) => {
+  const buildFamilyTree = (families) => {
+    // Create a map of all avatars by ID for quick lookup
+    const avatarMap = new Map();
+    families.forEach(family => {
+      avatarMap.set(family._id.toString(), family);
+      family.descendants.forEach(desc => {
+        avatarMap.set(desc._id.toString(), desc);
+      });
+    });
+
+    // For each avatar, organize into parent-child relationships
+    const nodes = new Map();
+    const rootNodes = [];
+
+    avatarMap.forEach((avatar) => {
+      if (!nodes.has(avatar._id.toString())) {
+        nodes.set(avatar._id.toString(), { ...avatar, children: [] });
+      }
+
+      const node = nodes.get(avatar._id.toString());
+
+      if (!avatar.parents || avatar.parents.length === 0) {
+        rootNodes.push(node);
+      } else {
+        avatar.parents.forEach(parentId => {
+          const parentNode = nodes.get(parentId.toString()) || { children: [] };
+          if (!nodes.has(parentId.toString())) {
+            nodes.set(parentId.toString(), parentNode);
+          }
+          parentNode.children = parentNode.children || [];
+          parentNode.children.push(node);
+        });
+      }
+    });
+
+    return rootNodes;
+  };
+
+  const renderFamilyTree = (node, depth = 0) => {
     return (
-      <div key={family._id} className="ml-6">
+      <div key={node._id} className="ml-6 border-l-2 border-gray-700">
         <div className="flex items-center gap-3 p-2 hover:bg-gray-700 rounded">
           <img 
-            src={family.thumbnailUrl || family.imageUrl}
-            alt={family.name}
+            src={node.thumbnailUrl || node.imageUrl}
+            alt={node.name}
             className="w-10 h-10 rounded-full object-cover"
           />
           <div>
-            <span>{family.emoji}</span>
-            <span className="font-bold ml-2">{family.name}</span>
+            <span className="font-bold">{node.name}</span>
+            <span className="text-gray-400 ml-2">({node.children?.length || 0} descendants)</span>
           </div>
         </div>
-        {family.descendants?.map(child => renderFamilyTree(child, depth + 1))}
+        <div className="ml-4">
+          {node.children?.map(child => renderFamilyTree(child, depth + 1))}
+        </div>
       </div>
     );
   };
   
   return (
     <div className="space-y-4">
-      {families.map(family => renderFamilyTree(family))}
+      {families.length === 0 ? (
+        <div className="text-center text-gray-500">No families found</div>
+      ) : (
+        buildFamilyTree(families).map(root => renderFamilyTree(root))
+      )}
     </div>
   );
 }
@@ -617,10 +670,12 @@ function App() {
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
             </div>
           )}
-          <AvatarDetailModal 
-            avatar={selectedAvatar} 
-            onClose={() => setSelectedAvatar(null)} 
-          />
+          {selectedAvatar && (
+            <AvatarDetailModal 
+              avatar={selectedAvatar} 
+              onClose={() => setSelectedAvatar(null)} 
+            />
+          )}
         </>
       ) : currentView === 'combat' ? (
         <CombatLog />
@@ -631,5 +686,6 @@ function App() {
   );
 }
 
+// Root render
 const rootElement = document.getElementById('root');
 ReactDOM.createRoot(rootElement).render(<App />);
