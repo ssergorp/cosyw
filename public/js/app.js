@@ -179,6 +179,28 @@ function AvatarDetailModal({ avatar, onClose }) {
           <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">×</button>
         </div>
 
+        {/* Add alternate avatars section if they exist */}
+        {avatar.alternateAvatars?.length > 0 && (
+          <div className="mt-4 bg-gray-700 rounded-lg p-4">
+            <h3 className="text-xl font-bold mb-2">Alternate Avatars</h3>
+            <div className="flex flex-wrap gap-4">
+              {avatar.alternateAvatars.map((altAvatar, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <img 
+                    src={altAvatar.imageUrl} 
+                    alt={altAvatar.name}
+                    className="w-12 h-12 rounded-full object-cover"
+                  />
+                  <div>
+                    <div className="font-bold">{altAvatar.emoji}</div>
+                    <div className="text-sm text-gray-400">Tier {calculateTier(altAvatar)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
           <div className="space-y-4">
             <div className="bg-gray-700 rounded-lg p-4">
@@ -257,11 +279,18 @@ function AvatarCard({ avatar, onSelect }) {
       }`}
     >
       <div className="flex items-center space-x-4">
-        <img 
-          src={avatar.imageUrl} 
-          alt={avatar.name} 
-          className="w-16 h-16 rounded-full object-cover"
-        />
+        <div className="relative">
+          <img 
+            src={avatar.imageUrl} 
+            alt={avatar.name} 
+            className="w-16 h-16 rounded-full object-cover"
+          />
+          {avatar.alternateAvatars?.length > 0 && (
+            <div className="absolute -bottom-1 -right-1 bg-blue-600 rounded-full px-2 py-1 text-xs">
+              +{avatar.alternateAvatars.length}
+            </div>
+          )}
+        </div>
         <div className="flex-1">
           <div className="flex justify-between items-start">
             <div>

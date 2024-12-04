@@ -36,7 +36,7 @@ export class ConversationHandler {
   async checkIdleUpdate(avatars) {
     if (Date.now() - this.lastUpdate >= this.IDLE_TIME) {
       const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
-      await this.generateNarrative(randomAvatar, { type: 'inner_monologue' });
+      await this.generateNarrative(randomAvatar);
       this.lastUpdate = Date.now();
     }
   }
@@ -45,8 +45,9 @@ export class ConversationHandler {
   /**
    * Unified method to generate a narrative for reflection or inner monologue.
    */
-  async generateNarrative(avatar, options = {}) {
-    const { crossGuild = false, channelIds = [] } = options;
+  async generateNarrative(avatar) {
+    
+    const memories = await this.memoryService.getMemories(avatar._id);
 
     try {
       const lastNarrative = await this.getLastNarrative(avatar._id);
@@ -59,10 +60,12 @@ export class ConversationHandler {
         avatar.model = await this.aiService.selectRandomModel();
         await this.avatarService.updateAvatar(avatar);
       }
-      const prompt = this.buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative);
+      const memories = (await this.memoryService.getMemories(avatar._id)).map(m => m.memory).join('\n');
+      const prompt = await this.buildNarrativePrompt(avatar, [...memories]);
+
       const narrative = await this.aiService.chat([
         { role: 'system', content: avatar.prompt || `You are ${avatar.name}. ${avatar.personality}` },
-        { role: 'assistant', content: `I remember: ${(await this.memoryService.getMemories(avatar._id)).map(m => m.memory).join('\n')}` },
+        { role: 'assistant', content: `I remember: ${memories}` },
         { role: 'user', content: prompt }
       ], { model: avatar.model });
 
@@ -73,6 +76,11 @@ export class ConversationHandler {
         this.updateNarrativeHistory(avatar, narrative, thread.guild.name);
       }
 
+      // generate a new dynamic prompt for the avatar based on their system prompt and the generated narrative
+      avatar.prompt = await this.buildSystemPrompt(avatar);
+      await this.avatarService.updateAvatar(avatar);
+
+
       return narrative;
     } catch (error) {
       this.logger.error(`Error generating narrative for ${avatar.name}: ${error.message}`);
@@ -80,28 +88,15 @@ export class ConversationHandler {
     }
   }
 
-  buildNarrativePrompt(avatar, crossGuild, channelIds, lastNarrative) {
-    const basePrompt = `As ${avatar.name}, reflect deeply on your evolving story and interactions.`;
-
-    if (crossGuild) {
-      return `${basePrompt}
-
-Describe your most recent dream, then based on the information above, describe any:
-1. Significant moments and relationships.
-2. Connections made mention special users or loacations.
-3. Current thoughts, feelings, goals.`;
-    }
-
-    return `${basePrompt}
-
-Previous Narrative:
-${lastNarrative?.content || 'None yet.'}
-
-Describe:
-1. Your emotional state
-2. Key memories and experiences
-3. Goals and aspirations
-4. Reflections on recent interactions.`;
+  buildNarrativePrompt(avatar, memories) {
+    const memoryPrompt = memories.map(m => (m.content || m.memory)).join('\n');
+    return `I am ${avatar.name || ''}.
+    
+    ${avatar.personality || ''}
+    
+    ${avatar.description || ''}
+    
+    ${memoryPrompt}`;
   }
 
   async getOrCreateThread(avatar) {
@@ -154,7 +149,7 @@ Describe:
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
       const lastNarrative = await db.collection('narratives')
-        .findOne({ avatarId }, { sort: { timestamp: -1 } });
+        .findOne({ $or: [ { avatarId }, { avatarId: avatarId.toString() }, { avatarId: { $exists: false } } ] }, { sort: { timestamp: -1 } });
       await client.close();
       return lastNarrative;
     } catch (error) {
@@ -178,7 +173,7 @@ Describe:
     try {
 
       // Get recent channel messages
-      const messages = await channel.messages.fetch({ limit: 10 });
+      const messages = await channel.messages.fetch({ limit: 18 });
       const messageHistory = messages.reverse().map(msg => ({
         author: msg.author.username,
         content: msg.content,
@@ -206,23 +201,26 @@ Describe:
         await this.avatarService.updateAvatar(avatar);
       }
 
+      avatar.channelName = channel.name;
+
       const systemPrompt = await this.buildSystemPrompt(avatar);
       // Generate response using AI service
       let response = await this.aiService.chat([
-        {
-          role: 'system',
-          content: `You are ${avatar.name}. ${avatar.personality}
-          Your last reflection: ${context.lastReflection}
-          
-          ${systemPrompt}
-          `
-        },
+        { role: 'system', content: systemPrompt },
         {
           role: 'user',
           content: `Channel: #${context.channelName} in ${context.guildName}
           Recent messages:
             ${context.recentMessages.map(m => `${m.author}: ${m.content}`).join('\n')}
-          You are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. Keep it SHORT. No more than three sentences.`
+          You are ${avatar.name}. Respond to the chat in character advancing your goals and keeping the chat interesting. 
+          
+          use emojis if its funny
+          speak freely and have fun, no need to use capitals or proper spelling this is a 
+
+          only provide a single sentence response
+
+          ${avatar.name}:
+          `
         }
       ], {
         max_tokens: 256,
@@ -237,6 +235,12 @@ Describe:
       // if the response starts with the avatar name, remove it
       if (response.startsWith(avatar.name + ':')) {
         response = response.replace(avatar.name + ':', '').trim();
+      }
+
+      // if the response is more than 500 characters, truncate it at newlines.
+      if (response.length > 2000) {
+        console.warn(`✂️ Truncating response for ${avatar.name}`);
+        response = response.substring(0, response.lastIndexOf('\n', 500));
       }
 
       // Extract and process tool commands using dungeonService
@@ -305,27 +309,29 @@ Describe:
   }
 
   async buildSystemPrompt(avatar) {
-    const basePrompt = `You are ${avatar.name}. ${avatar.personality}`;
-    const sentimentPrompt = `You have not deveveloped any sentiments yet.`;
-    const dungeonPrompt = `
-    Sentiments:
-    
-    ${sentimentPrompt}
+    // Get the most recent narrative for the avatar
+    const lastNarrative = await this.getLastNarrative(avatar._id);
 
-    Available commands:
+    const basePrompt = `You are ${avatar.name}.
+    
+    ${avatar.personality}
+
+    ${lastNarrative ? `${lastNarrative.content}` : ''}
+    `;
+    const dungeonPrompt = `These commands are available in this location (you can also use breed and summon):
+    
     ${this.dungeonService.getCommandsDescription()}
     
     You can use any of these commands on a new line at the end of your message.
   `;
 
     // Add location awareness to the prompt
-    const location = await this.dungeonService.getAvatarLocation(avatar._id);
+    const location = await this.dungeonService.getLocationDescription(avatar.channelId, avatar.channelName);
     const locationPrompt = location ?
       `\n\nYou are currently in ${location.name}. ${location.description}` :
-      '\n\nYou are wandering between locations.';
+      `\n\nYou are in ${avatar.channelName || 'a chat channel'}.`;
 
-    const movementPrompt = `\nYou can move to new locations using the !move command.`;
 
-    return basePrompt + locationPrompt + movementPrompt + dungeonPrompt;
+    return basePrompt + locationPrompt + dungeonPrompt;
   }
 }

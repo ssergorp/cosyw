@@ -2,12 +2,11 @@
 import { ConversationHandler } from './ConversationHandler.mjs';
 import { DecisionMaker } from './DecisionMaker.mjs';
 import { MessageProcessor } from './MessageProcessor.mjs';
-import { setIntervalAsync } from 'set-interval-async/fixed';
 
 import { DungeonService } from '../dungeon/DungeonService.mjs'; // Added import
 import { DungeonProcessor } from '../dungeon/DungeonProcessor.mjs'; // Added import
 
-
+const RESPONSE_RATE = process.env.RESPONSE_RATE || 0.2; // 20% response rate
 
 export class ChatService {
   constructor(client, db, options = {}) {
@@ -208,8 +207,9 @@ export class ChatService {
     const messages = await this.getRecentMessagesFromDatabase(null, 1000);
     const topAvatars = await this.getTopMentions(messages, avatars);
 
-
-    const replyAvatars = topAvatars.slice(0, 12);
+    const replyAvatars = topAvatars
+      .sort(() => Math.random() - 0.6)
+      .slice(0, 24);
     // respond as each of the top 6 avatars
     for (const avatar of replyAvatars) {
       const channel = await this.client.channels.cache.get(avatar.channelId);
@@ -224,7 +224,10 @@ export class ChatService {
       }
 
       try {
-        await this.respondAsAvatar(channel, avatar, Math.random() < 0.1 || false);
+        await this.respondAsAvatar(
+          channel, avatar,
+          Math.random() < RESPONSE_RATE || false
+        );
       } catch (error) {
         this.logger.error(`Error responding as avatar ${avatar.name}: ${error.message}`);
       }
@@ -250,10 +253,7 @@ export class ChatService {
         this.logger.error(`Error in decision maker: ${error.message}`);
       }
 
-      // Check if response is allowed based on cooldowns/decisions
-      const shouldRespond = force || decision;
-
-      if (shouldRespond) {
+      if (decision) {
         this.logger.info(`${avatar.name} decided to respond in ${channel.id}`);
         await this.conversationHandler.sendResponse(channel, avatar);
         // Track the response in DecisionMaker
@@ -282,31 +282,13 @@ export class ChatService {
       if (avatars.length > 0) {
         const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
         this.logger.info(`🎯 Forcing startup reflection for ${randomAvatar.name}`);
-        await this.generateReflection(randomAvatar);
-        const channelIds = [randomAvatar.channelId];
-        await this.conversationHandler.generateNarrative(
-          randomAvatar,
-          { channelIds, type: 'inner_monologue', }
-        );
+        await this.conversationHandler.generateNarrative(randomAvatar);
       }
 
       this.logger.info('✅ ChatService started.');
     } catch (error) {
       this.logger.error(`Failed to start ChatService: ${error.message}`);
       throw error;
-    }
-  }
-
-  async triggerStartupReflection() {
-    try {
-      const avatars = await this.messageProcessor.getActiveAvatars();
-      if (!avatars.length) return;
-
-      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
-      this.logger.info(`🌅 Triggering startup reflection for ${randomAvatar.name}`);
-      await this.generateReflection(randomAvatar);
-    } catch (error) {
-      this.logger.error('Error triggering startup reflection:', error);
     }
   }
 
@@ -343,19 +325,12 @@ export class ChatService {
     }
   }
 
-  async generateReflection(avatar) {
-    const channelIds = [avatar.channelId];
-    await this.conversationHandler.generateNarrative(avatar, {
-      type: 'reflection',
-      crossGuild: true, channelIds
-    });
-  }
-
   setupReflectionInterval() {
     setInterval(async () => {
       const avatars = await this.messageProcessor.getActiveAvatars();
+      avatars.sort(() => Math.random() - 0.5);
       for (const avatar of avatars) {
-        await this.generateReflection(avatar);
+        await this.conversationHandler.generateNarrative(avatar);
       }
     }, this.REFLECTION_INTERVAL);
   }

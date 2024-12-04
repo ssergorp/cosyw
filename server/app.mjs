@@ -3,7 +3,7 @@ import cors from 'cors';
 import { MongoClient, ObjectId } from 'mongodb'; // Added ObjectId for ID handling
 import models from '../src/models.config.mjs';
 import avatarRoutes from './routes/avatars.mjs';
-import tribeRoutes from './routes/tribes.mjs';
+import familyRoutes from './routes/families.mjs'; // renamed from tribeRoutes
 
 const app = express();
 const port = process.env.PORT || 3080;
@@ -57,7 +57,7 @@ function escapeRegExp(string) {
 
 // API Routes
 app.use('/api/avatars', avatarRoutes(db));
-app.use('/api/tribes', tribeRoutes(db));
+app.use('/api/families', familyRoutes(db));
 
 app.get('/api/leaderboard', async (req, res) => {
   const limit = parseInt(req.query.limit) || 24;
@@ -253,10 +253,32 @@ app.get('/api/leaderboard', async (req, res) => {
     const hasMore = messageStats.length > limit;
     const avatarsToReturn = messageStats.slice(0, limit);
 
-    // Get avatar details for the paginated results
+    // Get avatar details for the paginated results with merged stats
     const avatarDetailsArray = await Promise.all(avatarsToReturn.map(async (stat) => {
-      const avatar = stat.avatarInfo[0]; // Take first matching avatar
-      if (!avatar) return null;
+      // Use originalNames array to find all matching avatars
+      const avatars = stat.avatarInfo;
+      if (!avatars.length) return null;
+
+      const sanitizeNumber = (num) => (typeof num === 'number' && !isNaN(num)) ? num : 0;
+
+      // Merge dungeonStats for all avatars
+      const mergedDungeonStats = {
+        attack: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.attack || 0)))),
+        defense: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.defense || 0)))),
+        hp: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.hp || 0))))
+      };
+
+      // Select primary avatar (highest tier, or most recent if tiers are equal)
+      const sortedAvatars = avatars.sort((a, b) => {
+        const tierA = calculateTier(a);
+        const tierB = calculateTier(b);
+        if (tierA !== tierB) {
+          return rarityToTier[tierA] > rarityToTier[tierB] ? -1 : 1;
+        }
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      });
+
+      const primaryAvatar = sortedAvatars[0];
 
       // Use the normalized name for reflections lookup
       const normalizedName = stat._id;
@@ -268,22 +290,20 @@ app.get('/api/leaderboard', async (req, res) => {
         }
       );
 
-      // Get dungeon stats
-      const dungeonStats = stat.dungeonStats || { attack: 0, defense: 0, hp: 0 };
-
       return {
-        ...avatar,
+        ...primaryAvatar,
         messageCount: stat.messageCount,
         lastMessage: stat.lastMessage,
         recentMessages: stat.recentMessages.slice(0, 5),
         lastReflection: lastReflection?.reflectionContent || null,
         lastReflectionTime: lastReflection?.timestamp || null,
-        tier: calculateTier(avatar),  // Changed to use model rarity
-        lives: avatar.lives, // Include lives
-        attack: dungeonStats.attack || 0,
-        defense: dungeonStats.defense || 0,
-        hp: dungeonStats.hp || 0,
-        originalNames: stat.originalNames // Include all name variations
+        tier: calculateTier(primaryAvatar),
+        lives: primaryAvatar.lives,
+        attack: mergedDungeonStats.attack,
+        defense: mergedDungeonStats.defense,
+        hp: mergedDungeonStats.hp,
+        originalNames: stat.originalNames,
+        alternateAvatars: sortedAvatars.slice(1) // Include other avatars
       };
     }));
 
@@ -387,6 +407,76 @@ app.get('/api/dungeon/log', async (req, res) => {
     res.json(enrichedLog);
   } catch (error) {
     console.error('Error fetching combat log:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add new family tree endpoint
+app.get('/api/family-tree', async (req, res) => {
+  try {
+    if (!db) throw new Error('Database not connected');
+
+    const minMembers = parseInt(req.query.minMembers) || 1;
+    const parentEmoji = req.query.emoji;
+    const maxDepth = parseInt(req.query.maxDepth) || 999;
+
+    const pipeline = [
+      {
+        $match: {
+          emoji: { $exists: true }
+        }
+      },
+      {
+        $graphLookup: {
+          from: 'avatars',
+          startWith: '$emoji',
+          connectFromField: 'emoji',
+          connectToField: 'parentEmoji',
+          as: 'descendants',
+          maxDepth: maxDepth - 1
+        }
+      }
+    ];
+
+    if (parentEmoji) {
+      pipeline.unshift({ $match: { emoji: parentEmoji } });
+    }
+
+    if (minMembers > 1) {
+      pipeline.push({
+        $match: {
+          $expr: { $gte: [{ $size: '$descendants' }, minMembers - 1] }
+        }
+      });
+    }
+
+    const familyTrees = await db.collection('avatars').aggregate(pipeline).toArray();
+
+    // Transform into hierarchical structure
+    const transformToTree = (avatar, depth = 0) => {
+      if (depth >= maxDepth) return null;
+      
+      const children = familyTrees
+        .filter(a => a.parentEmoji === avatar.emoji)
+        .map(child => transformToTree(child, depth + 1))
+        .filter(Boolean);
+
+      return {
+        id: avatar._id,
+        name: avatar.name,
+        emoji: avatar.emoji,
+        imageUrl: avatar.imageUrl,
+        children: children
+      };
+    };
+
+    const roots = familyTrees
+      .filter(a => !a.parentEmoji)
+      .map(root => transformToTree(root));
+
+    res.json(roots);
+  } catch (error) {
+    console.error('Family tree error:', error);
     res.status(500).json({ error: error.message });
   }
 });

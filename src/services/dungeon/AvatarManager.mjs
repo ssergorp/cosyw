@@ -11,7 +11,7 @@ export class AvatarManager {
     try {
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
-      return await db.collection('avatars').findOne({ avatarId });
+      return await db.collection('avatars').findOne({ _id: avatarId });
     } finally {
       await client.close();
     }

@@ -16,33 +16,32 @@ export class OpenRouterService {
   }
 
   async selectRandomModel() {
-    const rarityWeights = {
-      'common': 0.6,
-      'uncommon': 0.25,
-      'rare': 0.1,
-      'legendary': 0.05
-    };
-
-    // Select rarity first
-    const roll = Math.random();
-    let selectedRarity;
-    let accumulated = 0;
-    
-    for (const [rarity, weight] of Object.entries(rarityWeights)) {
-      accumulated += weight;
-      if (roll <= accumulated) {
-        selectedRarity = rarity;
-        break;
-      }
+    const rarityRanges = [
+      { rarity: 'common', min: 1, max: 12 },        // Common: 1-12 (60%)
+      { rarity: 'uncommon', min: 13, max: 17 },    // Uncommon: 13-17 (25%)
+      { rarity: 'rare', min: 18, max: 19 },        // Rare: 18-19 (10%)
+      { rarity: 'legendary', min: 20, max: 20 },   // Legendary: 20 (5%)
+    ];
+  
+    // Roll a d20
+    const roll = Math.ceil(Math.random() * 20);
+  
+    // Determine rarity based on the roll
+    const selectedRarity = rarityRanges.find(range => roll >= range.min && roll <= range.max)?.rarity;
+  
+    // Filter models by the selected rarity
+    const availableModels = this.modelConfig.filter(model => model.rarity === selectedRarity);
+  
+    // Return a random model from the selected rarity group or fallback to default
+    if (availableModels.length > 0) {
+      const randomIndex = Math.floor(Math.random() * availableModels.length);
+      return availableModels[randomIndex].model;
     }
-
-    // Get all models of selected rarity
-    const availableModels = this.modelConfig.filter(m => m.rarity === selectedRarity);
-    if (!availableModels.length) return this.model; // Fallback to default
-
-    // Select random model from rarity group
-    return availableModels[Math.floor(Math.random() * availableModels.length)].model;
+  
+    // Fallback to default if no models are found
+    return this.model;
   }
+  
 
   modelIsAvailable(model) {
     return this.modelConfig.some(m => m.model === model);

@@ -96,7 +96,7 @@ export class DungeonService {
 
   getCommandsDescription() {
     return Array.from(this.tools.entries())
-      .map(([name, tool]) => `${tool.getSyntax()} - ${tool.getDescription()}`)
+      .map(([name, tool]) => `${tool.getSyntax()}\n${tool.getDescription()}`)
       .join('\n');
   }
 
@@ -144,16 +144,30 @@ export class DungeonService {
     this.tools.set('remember', new RememberTool(this));
   }
 
+  async getLocationDescription(locationId, locationName) {
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(process.env.MONGO_DB_NAME);
+      const location = await db.collection('locations').findOne({ $or: [
+        { channelId: locationId },
+        { name: locationName }]});
+      return location?.description;
+    } finally {
+      await client.close();
+    }
+  }
+
   async getAvatarLocation(avatarId) {
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
-      const position = await db.collection('dungeon_positions').findOne({ avatarId });
+      const position = await db.collection('dungeon_positions').findOne({ $or: [ { avatarId }, { avatarId: avatarId.toString()  } ] });
       if (!position) return null;
       
       // Get full location data
-      const location = await db.collection('dungeon_locations').findOne({ id: position.locationId });
+      const location = await db.collection('locations').findOne({ channelId: position.locationId });
       if (!location) return null;
 
       // Get the Discord channel for this location
@@ -227,7 +241,7 @@ export class DungeonService {
       
       // Update position
       await db.collection('dungeon_positions').updateOne(
-        { avatarId },
+        { avatarId: avatarId },
         { 
           $set: { 
             locationId: newLocationId,
@@ -254,7 +268,7 @@ export class DungeonService {
     try {
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
-      const stats = await db.collection('dungeon_stats').findOne({ avatarId });
+      const stats = await db.collection('dungeon_stats').findOne({ $or: [ { avatarId }, { avatarId: avatarId.toString() } ] });
       return stats || { ...this.defaultStats, avatarId };
     } finally {
       await client.close();

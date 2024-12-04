@@ -281,7 +281,7 @@ export async function sendAvatarProfileEmbedFromObject(avatar) {
     await webhookClient.send({
       embeds: [avatarEmbed],
       threadId: channel.isThread() ? channelId : undefined,
-      username: name.slice(0, 80), // Discord limits usernames to 80 characters
+      username: `🔮 ${name.slice(0, 80)}`, // Discord limits usernames to 80 characters
       avatarURL: imageUrl,
     });
 

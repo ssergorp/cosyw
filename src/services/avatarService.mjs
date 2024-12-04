@@ -64,29 +64,65 @@ export class AvatarGenerationService {
     }
   }
 
+  /**
+ * Get the last breeding date for an avatar
+ * @param {string} avatarId - ID of avatar to check
+ * @returns {Promise<Date|null>} Last breeding date or null if never bred
+ */
+  async getLastBredDate(avatarId) {
+    const client = new MongoClient(process.env.MONGO_URI);
 
-  async getAvatarsWithRecentMessages() {
+    try {
+      await client.connect();
+      const db = client.db();
+
+      // Find most recent avatar where this ID is in parents array
+      const lastOffspring = await db.collection('avatars')
+        .findOne(
+          { parents: avatarId },
+          {
+            sort: { createdAt: -1 },
+            projection: { createdAt: 1 }
+          }
+        );
+
+      if (!lastOffspring) {
+        return null;
+      }
+
+      return new Date(lastOffspring.createdAt);
+
+    } catch (error) {
+      this.logger.error(`Error getting last bred date for ${avatarId}: ${error.message}`);
+      throw error;
+    } finally {
+      await client.close();
+    }
+  }
+
+
+  async getAvatarsWithRecentMessages(limit = 100) {
     try {
       // get 1000 most recent messages
       const collection = this.db.collection('messages');
       // get the authorUsername ranked by count
       const pipeline = [
-        { 
-          $match: { 
-            authorId: process.env.DISCORD_BOT_ID ? process.env.DISCORD_BOT_ID : { $exists: true } 
-          } 
+        {
+          $match: {
+            authorId: process.env.DISCORD_BOT_ID ? process.env.DISCORD_BOT_ID : { $exists: true }
+          }
         },
-        { 
-          $group: { 
+        {
+          $group: {
             _id: '$authorUsername',  // Assuming you want to group by author's username
-            count: { $sum: 1 } 
-          } 
+            count: { $sum: 1 }
+          }
         },
-        { 
-          $sort: { count: -1 } 
+        {
+          $sort: { count: -1 }
         },
-        { 
-          $limit: 1000 
+        {
+          $limit: 1000
         }
       ];
 
@@ -95,7 +131,7 @@ export class AvatarGenerationService {
       const topAuthors = messages.map(mention => mention._id).slice(0, 100);
       // get the avatars of the top 10 authors
       const avatars = await this.db.collection(this.AVATARS_COLLECTION).find({ name: { $in: topAuthors } }).toArray();
-      return avatars.slice(0, 13);
+      return avatars.slice(0, limit);
     } catch (error) {
       this.logger.error(`Error fetching avatars with recent messages: ${error.message}`);
       return [];
@@ -306,7 +342,7 @@ export class AvatarGenerationService {
         date: now,
       };
 
-      const result = await collection.insertOne(record); 
+      const result = await collection.insertOne(record);
       this.logger.info('Record inserted into MongoDB successfully.');
     } catch (error) {
       this.logger.error(`Error inserting into MongoDB: ${error.message}`);

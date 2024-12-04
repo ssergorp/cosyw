@@ -19,6 +19,18 @@ import { MessageHandler } from './services/chat/MessageHandler.mjs';
 // Load environment variables from .env file
 dotenv.config();
 
+const BREEDS = [
+  "Poozer",
+  "Toad",
+  "Echo",
+  "Flux",
+  "Ka",
+  "rat",
+  "Pig",
+  "Grizzle"
+];
+let BREEDING_SEASON = BREEDS[Math.floor(Math.random() * BREEDS.length)];
+
 // Initialize Logger
 const logger = winston.createLogger({
   level: 'warn',
@@ -104,14 +116,71 @@ async function saveMessageToDatabase(message) {
   }
 }
 
-async function handleBreedCommand(message, args) {
+
+async function handleBreedCommand(message, args, commandLine) {
   // find an avatar for each argument
   const avatars = await avatarService.getAllAvatars();
-  const mentionedAvatars = extractMentionedAvatars(message.content, avatars);
+  const mentionedAvatars = Array.from(extractMentionedAvatars(commandLine, avatars)).slice(-2);
+
+  // set the breeding season based on the day of the week
+  const dayOfWeek = new Date().getDay();
+  BREEDING_SEASON = BREEDS[dayOfWeek % BREEDS.length];
 
   // if there are two avatars mentioned, reply with their names
-  if (mentionedAvatars.size === 2) {
-    const [avatar1, avatar2] = Array.from(mentionedAvatars);
+  if (mentionedAvatars.length === 2) {
+    const [avatar1, avatar2] = mentionedAvatars;
+
+    // Ensure both avatars are not the same
+    if (avatar1._id === avatar2._id) {
+      await replyToMessage(
+        message.channel.id,
+        message.id,
+        'Both avatars must be different to breed.'
+      );
+      return;
+    }
+
+    // both avatars must have the same channelid
+    if (avatar1.channelId !== avatar2.channelId) {
+      await replyToMessage(
+        message.channel.id,
+        message.id,
+        'Both avatars must be in the same channel to breed.'
+      );
+      return;
+    }
+
+    // check if the avatar has been bred in the last 24 hours
+    const breedingDate1 = await avatarService.getLastBredDate(avatar1._id.toString());
+    
+    if (breedingDate1 && new Date() - new Date(breedingDate1) < 24 * 60 * 60 * 1000) {
+      await replyToMessage(
+        message.channel.id,
+        message.id,
+        `${avatar1.name} has already been bred in the last 24 hours.`
+      );
+      return;
+    }
+
+    const breedingDate2 = await avatarService.getLastBredDate(avatar2._id.toString());
+    if (breedingDate1 && new Date() - new Date(breedingDate1) < 24 * 60 * 60 * 1000) {
+      await replyToMessage(
+        message.channel.id,
+        message.id,
+        `${avatar1.name} has already been bred in the last 24 hours.`
+      );
+      return;
+    }    
+
+    // Ensure both avatars have "Poozer" in their name
+    if (message.author.username !== 'noxannihilism' && !message.author.bot && (!avatar1.name.includes(BREEDING_SEASON.toLowerCase()) && !avatar2.name.toLowerCase().includes(BREEDING_SEASON.toLowerCase()))) {
+      await replyToMessage(
+        message.channel.id,
+        message.id,
+        'Both avatars must contain the correct breed in their name to be bred by humans.'
+      );
+      return;
+    }
     await replyToMessage(
       message.channel.id,
       message.id,
@@ -119,18 +188,26 @@ async function handleBreedCommand(message, args) {
     );
 
 
+    const memories1 = (await chatService.conversationHandler.memoryService.getMemories(avatar1._id)).map(m => m.memory).join('\n');
+    const narrative1 = await chatService.conversationHandler.buildNarrativePrompt(avatar1, [...memories1]);
+    const memories2 = (await chatService.conversationHandler.memoryService.getMemories(avatar2._id)).map(m => m.memory).join('\n');
+    const narrative2 = await chatService.conversationHandler.buildNarrativePrompt(avatar2, [...memories2]);
+
+
     // combine the prompt, dynamicPersonality, and description of the two avatars into a message for createAvatar
     const prompt = `Breed the following avatars, and create a new avatar:
       AVATAR 1: ${avatar1.name} - ${avatar1.prompt}
       ${avatar1.description}
-      ${avatar1.dynamicPersonality}
+      ${avatar1.personality}
+      ${narrative1}
 
       AVATAR 2: ${avatar2.name} - ${avatar2.prompt}
       ${avatar2.description}
-      ${avatar2.dynamicPersonality}
+      ${avatar2.personality}
+      ${narrative2}
       `;
 
-    return await handleCreateCommand(message, [prompt]);
+    return await handleSummmonCommand(message, [prompt], true, { summoner: `${message.author.username}@${message.author.id}`, parents: [avatar1._id, avatar2._id] });
   } else {
     await replyToMessage(
       message.channel.id,
@@ -180,7 +257,7 @@ async function handleAttackCommand(message, args) {
  * @param {Message} message - The Discord message object.
  * @param {Array} args - The arguments provided with the command.
  */
-async function handleCreateCommand(message, args) {
+async function handleSummmonCommand(message, args, breed = false, attributes = {}) {
   let prompt = args.join(' ');
   let existingAvatar = null; // Declare at the start
 
@@ -194,21 +271,23 @@ async function handleCreateCommand(message, args) {
 
       await reactToMessage(client, message.channel.id, message.id, existingAvatar.emoji || '🔮');
 
-
       // Update database position
       await chatService.dungeonService.updateAvatarPosition(existingAvatar._id, message.channel.id);
 
       existingAvatar.channelId = message.channel.id;
       await avatarService.updateAvatar(existingAvatar);
 
-      existingAvatar.stats = await chatService.dungeonService.getAvatarStats(avatarId);
+      existingAvatar.stats = await chatService.dungeonService.getAvatarStats(existingAvatar._id);
       await sendAvatarProfileEmbedFromObject(existingAvatar);
       await chatService.respondAsAvatar(message.channel, existingAvatar, true);
+
+      await reactToMessage(client, message.channel.id, message.id, '✅');
       return;
     }
 
-    if (!message.author.bot) {
+    if (!breed && !message.author.bot) {
       replyToMessage(message.channel.id, message.id, '❌ Summoning orb not found.');
+      await reactToMessage(client, message.channel.id, message.id, '❌');
       return;
     }
 
@@ -233,8 +312,6 @@ async function handleCreateCommand(message, args) {
     const createdAvatar = await avatarService.createAvatar(avatarData);
 
     if (createdAvatar && createdAvatar.name) {
-      // React to the original message with the avatar's emoji
-      await reactToMessage(client, message.channel.id, message.id, createdAvatar.emoji || '🎉');
 
       if (!createdAvatar.model) {
         createdAvatar.model = await aiService.selectRandomModel();
@@ -243,6 +320,9 @@ async function handleCreateCommand(message, args) {
       createdAvatar.stats = await chatService.dungeonService.getAvatarStats(createdAvatar._id);
       await sendAvatarProfileEmbedFromObject(createdAvatar);
 
+      // update the avatar with the prompt
+      await avatarService.updateAvatar(createdAvatar);
+
       let intro = await aiService.chat([
         {
           role: 'system', content: `
@@ -250,12 +330,13 @@ async function handleCreateCommand(message, args) {
           ${createdAvatar.description}
           ${createdAvatar.personality}
         ` },
-        { role: 'user', content: `What's your avatar name? And what makes you unique in the digital realm?` }
+        { role: 'user', content: `You've just arrived. This is your one chance to introduce yourself. Impress me, and save yourself from elimination.` }
       ], { model: createdAvatar.model });
 
       createdAvatar.dynamicPersonality = intro;
       createdAvatar.channeId = message.channel.id;
       await avatarService.updateAvatar(createdAvatar);
+      createdAvatar.attributes = attributes;
 
       await sendAsWebhook(
         message.channel.id,
@@ -269,7 +350,12 @@ async function handleCreateCommand(message, args) {
         createdAvatar._id, message.channel.id
       );
 
+      // React to the original message with the avatar's emoji
+      await reactToMessage(client, message.channel.id, message.id, createdAvatar.emoji || '🎉');
+
+      await chatService.respondAsAvatar(message.channel, createdAvatar, true);
     } else {
+      await reactToMessage(client, message.channel.id, message.id, '❌');
       throw new Error('Avatar missing required fields after creation:', JSON.stringify(createdAvatar, null, 2));
     }
   } catch (error) {
@@ -295,10 +381,12 @@ function sanitizeInput(input) {
 // Add this new function after sanitizeInput
 async function findAvatarByName(name, avatars) {
   const sanitizedName = sanitizeInput(name.toLowerCase());
-  return avatars.find(avatar =>
+
+  // find all avatars with the same name
+  return avatars.filter(avatar =>
     avatar.name.toLowerCase() === sanitizedName ||
     sanitizeInput(avatar.name.toLowerCase()) === sanitizedName
-  );
+  ).sort(() => Math.random() - 0.5).shift();
 }
 
 /**
@@ -355,16 +443,15 @@ function extractMentionedAvatars(content, avatars) {
  * Handles other commands based on the message content.
  * @param {Message} message - The Discord message object.
  */
-async function handleCommands(message, args) {
+async function handleCommands(message, args, commandLine) {
 
-  if (message.content.toLowerCase().startsWith('!summon ')) {
+  if (commandLine.startsWith('!summon ')) {
     const args = message.content.slice(8).split(' ');
     await reactToMessage(client, message.channel.id, message.id, '🔮');
-    await handleCreateCommand(message, args);
-    await reactToMessage(client, message.channel.id, message.id, '✅');
+    await handleSummmonCommand(message, args);
   }
 
-  if (message.content.toLowerCase().startsWith('!attack ')) {
+  if (commandLine.startsWith('!attack ')) {
     if (!message.author.bot) {
       replyToMessage(message.channel.id, message.id, '❌ Sword of violence not found.');
       return;
@@ -375,14 +462,14 @@ async function handleCommands(message, args) {
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
 
-  if (message.content.startsWith('!breed')) {
-    if (!message.author.bot) {
-      replyToMessage(message.channel.id, message.id, '❌ Bow of cupidity not found.');
-      return;
-    }
+  if (commandLine.startsWith('!breed ')) {
+    // if (!message.author.bot) {
+    //   replyToMessage(message.channel.id, message.id, '❌ Bow of cupidity not found.');
+    //   return;
+    // }
     const args = message.content.slice(6).split(' ');
     await reactToMessage(client, message.channel.id, message.id, '🏹');
-    await handleBreedCommand(message, args);
+    await handleBreedCommand(message, args, commandLine);
     await reactToMessage(client, message.channel.id, message.id, '✅');
   }
 }
@@ -394,12 +481,20 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // Handle commands first
-    if (message.content.startsWith('!')) {
-      const [command, ...args] = message.content.slice(1).split(' ');
-      handleCommands(message, args);
-      return;
+    // split the message content into lines
+    const lines = message.content.split('\n');
+    // handle any lines that start with ! as commands
+    let counter = 2;
+    for (const line of lines) {
+      if (line.startsWith('!')) {
+        await handleCommands(message, line.split(' '), line.toLowerCase());
+        counter--;
+      }
+      if (counter === 0) {
+        break;
+      }
     }
+
 
     // Save message to database
     await saveMessageToDatabase(message);
