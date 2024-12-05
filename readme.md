@@ -81,13 +81,8 @@ Follow these steps to set up and run **CosyWorld**:
    - Create a `.env` file in the root directory.
    - Add the required environment variables as shown in the [Environment Variables](#environment-variables) section.
 
-4. **Run Database Migrations:**
 
-   ```bash
-   npm run migrate
-   ```
-
-5. **Start the Bot:**
+4. **Start the Bot:**
 
    ```bash
    npm start
