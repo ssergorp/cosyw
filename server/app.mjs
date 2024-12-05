@@ -1,10 +1,10 @@
 import express from 'express';
 import cors from 'cors';
-import { MongoClient, ObjectId } from 'mongodb'; // Added ObjectId for ID handling
+import { MongoClient, ObjectId } from 'mongodb';
 import models from '../src/models.config.mjs';
 import avatarRoutes from './routes/avatars.mjs';
-import familyRoutes from './routes/families.mjs'; // renamed from tribeRoutes
-import { generateThumbnail, ensureThumbnailDir } from './routes/avatars.mjs';
+import familyRoutes from './routes/families.mjs'
+import { generateThumbnail } from './routes/avatars.mjs';
 
 const app = express();
 const port = process.env.PORT || 3080;
@@ -13,22 +13,30 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-const mongoClient = new MongoClient(process.env.MONGO_URI);
+// Update MongoDB connection with better error handling
+const mongoClient = new MongoClient(process.env.MONGO_URI || 'mongodb://localhost:27017');
 
 // Connect to MongoDB once during server startup
 let db;
 await (async () => {
   try {
+    if (!process.env.MONGO_URI) {
+      console.warn('MONGO_URI not set in environment variables, using default localhost');
+    }
     await mongoClient.connect();
     db = mongoClient.db('cosyworld2');
-    console.log('Connected to MongoDB');
+    console.log('Connected to MongoDB at:', mongoClient.options.srvHost || mongoClient.options.hosts?.[0] || 'unknown host');
   } catch (error) {
     console.error('Failed to connect to MongoDB:', error);
-    process.exit(1); // Exit process with failure
+    console.error('Please check if:');
+    console.error('1. MongoDB is running');
+    console.error('2. MONGO_URI environment variable is set correctly');
+    console.error('3. Network allows connection to MongoDB');
+    process.exit(1);
   }
 })().catch(error => {
   console.error('MongoDB connection error:', error);
-  process.exit(1); // Exit process with failure
+  process.exit(1);
 });
 
 // Remove TIER_THRESHOLDS constant
@@ -58,203 +66,67 @@ function escapeRegExp(string) {
 
 // API Routes
 app.use('/api/avatars', avatarRoutes(db));
-app.use('/api/families', familyRoutes(db));
+app.use('/api/tribes', familyRoutes(db));
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    if (!db) {
-      throw new Error('Database not connected');
-    }
-
-    const limit = parseInt(req.query.limit) || 24;
-    const lastMessageCount = parseInt(req.query.lastMessageCount);
-    const lastId = req.query.lastId;
-    const tierFilter = req.query.tier;
-
-    // Add error handling for invalid parameters
-    if (isNaN(limit) || limit <= 0) {
-      return res.status(400).json({ error: 'Invalid limit parameter' });
-    }
-
-    // Add null checks before accessing properties
+    if (!db) throw new Error('Database not connected');
+    
     const pipeline = [
+      // Group messages by username
       {
         $group: {
-          _id: { $toLower: '$authorUsername' }, // Group by lowercase name
+          _id: { $toLower: '$authorUsername' },
           messageCount: { $sum: 1 },
-          originalNames: { $addToSet: '$authorUsername' }, // Keep track of all case variations
           lastMessage: { $max: '$timestamp' },
           recentMessages: {
             $push: {
               $cond: {
                 if: { $gte: ["$timestamp", { $subtract: [new Date(), 1000 * 60 * 60 * 24] }] },
-                then: {
-                  content: { $substr: ["$content", 0, 200] },
-                  timestamp: "$timestamp"
-                },
+                then: { content: { $substr: ["$content", 0, 200] }, timestamp: "$timestamp" },
                 else: null
               }
             }
           }
         }
       },
-      // Project stage remains similar but include originalNames
-      {
-        $project: {
-          messageCount: 1,
-          lastMessage: 1,
-          originalNames: 1, // Keep the original names array
-          recentMessages: {
-            $slice: [
-              {
-                $filter: {
-                  input: "$recentMessages",
-                  as: "msg",
-                  cond: { $ne: ["$$msg", null] }
-                }
-              },
-              5
-            ]
-          }
-        }
-      },
-      // Modified avatar lookup to use case-insensitive match
+      { $sort: { messageCount: -1 } },
+      // Lookup all avatars with matching name
       {
         $lookup: {
           from: 'avatars',
-          let: { normalized_name: '$_id' },
+          let: { username: '$_id' },
           pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $eq: [{ $toLower: '$name' }, '$$normalized_name']
-                }
+            { 
+              $match: { 
+                $expr: { $eq: [{ $toLower: '$name' }, '$$username'] }
               }
             },
-            {
-              $project: {
-                _id: 1,
-                name: 1,
-                emoji: 1,
-                model: 1,
-                lives: 1,
-                imageUrl: 1,
-                description: { $substr: ['$description', 0, 500] },
-                dynamicPersonality: { $substr: ['$dynamicPersonality', 0, 500] },
-                status: 1,
-                createdAt: 1
-              }
-            }
+            { $sort: { createdAt: -1 } }
           ],
-          as: 'avatarInfo'
+          as: 'variants'
         }
       },
-      // Add dungeon stats with limited fields
-      {
-        $lookup: {
-          from: 'dungeon_stats',
-          localField: 'avatarInfo._id',
-          foreignField: 'avatarId',
-          pipeline: [
-            {
-              $project: {
-                attack: 1,
-                defense: 1,
-                hp: 1
-              }
-            }
-          ],
-          as: 'dungeonStats'
-        }
-      },
-      {
-        $unwind: {
-          path: '$dungeonStats',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      // Find all avatars with matching name (case insensitive)
-      {
-        $lookup: {
-          from: 'avatars',
-          let: { normalized_name: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $eq: [{ $toLower: '$name' }, '$$normalized_name']
-                }
-              }
-            },
-            {
-              $sort: { createdAt: -1 } // Most recent first
-            },
-            {
-              $group: {
-                _id: '$name',
-                primaryAvatar: { $first: '$$ROOT' }, // Most recent becomes primary
-                alternateAvatars: { $push: '$$ROOT' }, // All avatars
-                allEmojis: { $addToSet: '$emoji' }, // Collect unique emojis
-                maxAttack: { $max: '$attack' },
-                maxDefense: { $max: '$defense' },
-                maxHp: { $max: '$hp' },
-                lives: { $first: '$lives' } // Take lives from primary avatar
-              }
-            },
-            {
-              $project: {
-                _id: '$primaryAvatar._id',
-                name: '$primaryAvatar.name',
-                imageUrl: '$primaryAvatar.imageUrl',
-                model: '$primaryAvatar.model',
-                description: '$primaryAvatar.description',
-                dynamicPersonality: '$primaryAvatar.dynamicPersonality',
-                createdAt: '$primaryAvatar.createdAt',
-                emojis: '$allEmojis',
-                attack: '$maxAttack',
-                defense: '$maxDefense',
-                hp: '$maxHp',
-                lives: '$lives',
-                alternateAvatars: {
-                  $slice: [
-                    {
-                      $filter: {
-                        input: '$alternateAvatars',
-                        as: 'alt',
-                        cond: { $ne: ['$$alt._id', '$primaryAvatar._id'] }
-                      }
-                    },
-                    10
-                  ]
-                }
-              }
-            }
-          ],
-          as: 'avatarInfo'
-        }
-      }
+      { $match: { 'variants.0': { $exists: true } } }
     ];
 
     // Add tier filtering if needed
-    if (tierFilter) {
+    const tierFilter = req.query.tier;
+    if (tierFilter && tierFilter !== 'All') {
       if (tierFilter === 'U') {
         pipeline.push({
           $match: {
             $or: [
-              { 'avatarInfo.model': { $exists: false } },
-              { 'avatarInfo.model': null },
-              {
-                'avatarInfo.model': {
-                  $nin: models.map(m => m.model)
-                }
-              }
+              { 'variants.0.model': { $exists: false } },
+              { 'variants.0.model': null },
+              { 'variants.0.model': { $nin: models.map(m => m.model) } }
             ]
           }
         });
       } else {
         pipeline.push({
           $match: {
-            'avatarInfo.model': {
+            'variants.0.model': {
               $in: models
                 .filter(m => rarityToTier[m.rarity] === tierFilter)
                 .map(m => m.model)
@@ -264,10 +136,9 @@ app.get('/api/leaderboard', async (req, res) => {
       }
     }
 
-    // Add sorting and pagination
-    pipeline.push({ $sort: { messageCount: -1, _id: 1 } });
-
-    // Update cursor conditions for more precise pagination
+    // Add pagination
+    const lastMessageCount = parseInt(req.query.lastMessageCount);
+    const lastId = req.query.lastId;
     if (lastMessageCount && lastId) {
       pipeline.push({
         $match: {
@@ -284,169 +155,215 @@ app.get('/api/leaderboard', async (req, res) => {
       });
     }
 
-    // Add sorting first, then limit
-    pipeline.push(
-      { 
-        $sort: { 
-          messageCount: -1, 
-          _id: 1  // Ensure consistent ordering for same message counts
-        }
-      },
-      { 
-        $limit: limit + 1 
-      }
-    );
+    const limit = parseInt(req.query.limit) || 24;
+    pipeline.push({ $limit: limit + 1 });
 
-    const messageStats = await db.collection('messages')
-      .aggregate(pipeline, { 
-        allowDiskUse: true // Add this option for large datasets
-      }).toArray();
+    const results = await db.collection('messages')
+      .aggregate(pipeline, { allowDiskUse: true })
+      .toArray();
 
-    if (!messageStats) {
-      return res.json({
-        avatars: [],
-        hasMore: false,
-        total: 0,
-        lastMessageCount: null,
-        lastId: null
-      });
-    }
+    const avatarDetails = await Promise.all(results.map(async (result) => {
+      const variants = result.variants;
+      const primaryAvatar = variants[0];
+      const thumbnails = await Promise.all(
+        variants.map(v => generateThumbnail(v.imageUrl))
+      );
 
-    const hasMore = messageStats.length > limit;
-    const avatarsToReturn = messageStats.slice(0, limit);
+      // Get ancestry and stats for primary avatar
+      const [ancestry, stats] = await Promise.all([
+        getAvatarAncestry(db, primaryAvatar._id),
+        db.collection('dungeon_stats').findOne({
+          $or: [
+            { avatarId: primaryAvatar._id },
+            { avatarId: primaryAvatar._id.toString() }
+          ]
+        })
+      ]);
 
-    // Safely handle null values in the pipeline
-    const avatarDetailsArray = await Promise.all(
-      avatarsToReturn.map(async (stat) => {
-        if (!stat || !stat.avatarInfo) return null;
-        // Use originalNames array to find all matching avatars
-        const avatars = stat.avatarInfo;
-        if (!avatars.length) return null;
+      return {
+        ...primaryAvatar,
+        variants: variants.map((v, i) => ({
+          ...v,
+          thumbnailUrl: thumbnails[i]
+        })),
+        ancestry,
+        messageCount: result.messageCount,
+        lastMessage: result.lastMessage,
+        recentMessages: result.recentMessages.filter(m => m !== null).slice(0, 5),
+        stats: stats || { attack: 0, defense: 0, hp: 0 }
+      };
+    }));
 
-        const sanitizeNumber = (num) => (num === null || isNaN(num)) ? 0 : num;
-
-        // Merge dungeonStats for all avatars
-        const mergedDungeonStats = {
-          attack: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.attack || 0)))),
-          defense: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.defense || 0)))),
-          hp: Math.max(...avatars.map(a => sanitizeNumber(a.lives === 0 ? 0 : (stat.dungeonStats?.hp || 0))))
-        };
-
-        // Select primary avatar (highest tier, or most recent if tiers are equal)
-        const sortedAvatars = avatars.sort((a, b) => {
-          const tierA = calculateTier(a);
-          const tierB = calculateTier(b);
-          if (tierA !== tierB) {
-            return rarityToTier[tierA] > rarityToTier[tierB] ? -1 : 1;
-          }
-          return new Date(b.createdAt) - new Date(a.createdAt);
-        });
-
-        const primaryAvatar = sortedAvatars[0];
-
-        // Generate thumbnails for primary and alternates
-        const [primaryThumb, alternateThumbnails] = await Promise.all([
-          generateThumbnail(primaryAvatar.imageUrl),
-          Promise.all(
-            (primaryAvatar.alternateAvatars || []).map(alt => 
-              generateThumbnail(alt.imageUrl)
-            )
-          )
-        ]);
-
-        // Enhance alternate avatars with thumbnails
-        const alternateAvatarsWithThumbs = primaryAvatar.alternateAvatars?.map((alt, i) => ({
-          ...alt,
-          thumbnailUrl: alternateThumbnails[i]
-        }));
-
-        // Use the normalized name for reflections lookup
-        const normalizedName = stat._id;
-        const lastReflection = await db.collection('reflections').findOne(
-          { name: { $regex: `^${normalizedName}$`, $options: 'i' } },
-          { 
-            sort: { timestamp: -1 },
-            projection: { reflectionContent: 1, timestamp: 1 }
-          }
-        );
-
-        return {
-          ...primaryAvatar,
-          thumbnailUrl: primaryThumb,
-          messageCount: stat.messageCount,
-          lastMessage: stat.lastMessage,
-          recentMessages: stat.recentMessages.slice(0, 5),
-          lastReflection: lastReflection?.reflectionContent || null,
-          lastReflectionTime: lastReflection?.timestamp || null,
-          tier: calculateTier(primaryAvatar),
-          lives: primaryAvatar.lives,
-          attack: mergedDungeonStats.attack,
-          defense: mergedDungeonStats.defense,
-          hp: mergedDungeonStats.hp,
-          originalNames: stat.originalNames,
-          alternateAvatars: alternateAvatarsWithThumbs // Include other avatars
-        };
-      })
-    );
-
-    const validAvatars = avatarDetailsArray.filter(avatar => avatar !== null);
+    const hasMore = results.length > limit;
+    const avatarsToReturn = results.slice(0, limit);
     const lastItem = avatarsToReturn[avatarsToReturn.length - 1];
 
     return res.json({
-      avatars: validAvatars,
+      avatars: avatarDetails,
       hasMore,
-      total: validAvatars.length,
-      lastMessageCount: lastItem ? lastItem.messageCount : null,
-      lastId: lastItem ? lastItem._id : null
+      total: avatarDetails.length,
+      lastMessageCount: lastItem?.messageCount || null,
+      lastId: lastItem?._id || null
     });
-
   } catch (error) {
     console.error('Leaderboard error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/avatar/:id/reflections', async (req, res) => {
-  try {
-    // Use the established db connection
-    if (!db) {
-      throw new Error('Database not connected');
-    }
+// Add ancestry helper function
+async function getAvatarAncestry(db, avatarId) {
+  const ancestry = [];
+  let currentAvatar = await db.collection('avatars').findOne(
+    { _id: new ObjectId(avatarId) },
+    { projection: { parents: 1 } }
+  );
 
-    const avatarId = req.params.id;
-
-    // Fetch reflections
-    const reflections = await db.collection('reflections')
-      .find({ avatarId })
-      .sort({ timestamp: -1 })
-      .limit(5)
-      .toArray();
-
-    // Fetch dungeon_stats
-    const dungeonStats = await db.collection('dungeon_stats').findOne(
-      { avatarId },
-      { projection: { attack: 1, defense: 1, hp: 1 } }
+  while (currentAvatar?.parents?.length) {
+    const parentId = currentAvatar.parents[0];
+    const parent = await db.collection('avatars').findOne(
+      { _id: new ObjectId(parentId) },
+      { projection: { _id: 1, name: 1, imageUrl: 1, emoji: 1, parents: 1 } }
     );
+    if (!parent) break;
+    ancestry.push(parent);
+    currentAvatar = parent;
+  }
 
-    // Fetch recent messages if needed
-    const recentMessages = await db.collection('messages')
-      .find({ authorId: avatarId })
-      .sort({ timestamp: -1 })
-      .limit(5)
-      .toArray();
+  return ancestry;
+}
+
+app.get('/api/avatar/:id/narratives', async (req, res) => {
+  try {
+    const avatarId = new ObjectId(req.params.id);
+    
+    // Fetch data in parallel
+    const [narratives, messages, dungeonStats] = await Promise.all([
+      db.collection('narratives')
+        .find({ avatarId })
+        .sort({ timestamp: -1 })
+        .limit(10)
+        .toArray(),
+      db.collection('messages')
+        .find({ avatarId })
+        .sort({ timestamp: -1 })
+        .limit(5)
+        .toArray(),
+      db.collection('dungeon_stats')
+        .findOne({ avatarId })
+    ]);
 
     res.json({
-      reflections,
-      dungeonStats: dungeonStats || { attack: 0, defense: 0, hp: 0 },
-      recentMessages
+      narratives,
+      recentMessages: messages,
+      dungeonStats: dungeonStats || { attack: 0, defense: 0, hp: 0 }
     });
+  } catch (error) {
+    console.error('Error fetching narratives:', error);
+    res.status(500).json({ 
+      error: error.message,
+      narratives: [],
+      recentMessages: [],
+      dungeonStats: { attack: 0, defense: 0, hp: 0 }
+    });
+  }
+});
+
+// Add new endpoints for memories and narratives
+app.get('/api/avatar/:id/memories', async (req, res) => {
+  try {
+    const memories = await db.collection('memories')
+      .find({ 
+        $or: [
+          { avatarId: new ObjectId(req.params.id) },
+          { avatarId: req.params.id }
+        ]
+      })
+      .sort({ timestamp: -1 })
+      .limit(10)
+      .toArray();
+    res.json({ memories }); // Wrap in object for consistency
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      memories: [] 
+    });
+  }
+});
+
+app.get('/api/avatar/:id/narratives', async (req, res) => {
+  try {
+    const narratives = await db.collection('narratives')
+      .find({ avatarId: new ObjectId(req.params.id) })
+      .sort({ timestamp: -1 })
+      .limit(10)
+      .toArray();
+    res.json(narratives);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-  // Remove the finally block that closes the connection
 });
 
-// Modify the /api/dungeon/log endpoint to include imageUrl in combat log entries
+// Add new endpoint for avatar's dungeon actions
+app.get('/api/avatar/:id/dungeon-actions', async (req, res) => {
+  try {
+    const avatarId = new ObjectId(req.params.id);
+    const avatar = await db.collection('avatars').findOne(
+      { _id: avatarId },
+      { projection: { name: 1 } }
+    );
+    
+    if (!avatar) {
+      return res.status(404).json({ error: 'Avatar not found' });
+    }
+
+    const actions = await db.collection('dungeon_log')
+      .find({
+        $or: [
+          { actor: avatar.name },
+          { target: avatar.name }
+        ]
+      })
+      .sort({ timestamp: -1 })
+      .limit(10)
+      .toArray();
+
+    res.json(actions);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add new search endpoint before the combat log endpoint
+app.get('/api/avatars/search', async (req, res) => {
+  try {
+    const { name } = req.query;
+    if (!name || name.length < 2) {
+      return res.json({ avatars: [] });
+    }
+
+    const escapedName = escapeRegExp(name);
+    const avatars = await db.collection('avatars')
+      .find({ 
+        name: { $regex: escapedName, $options: 'i' }
+      })
+      .limit(5)
+      .toArray();
+
+    const avatarsWithThumbs = await Promise.all(
+      avatars.map(async (avatar) => ({
+        ...avatar,
+        thumbnailUrl: await generateThumbnail(avatar.imageUrl)
+      }))
+    );
+
+    res.json({ avatars: avatarsWithThumbs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Enhance combat log endpoint with more information
 app.get('/api/dungeon/log', async (req, res) => {
   try {
     if (!db) throw new Error('Database not connected');
@@ -457,19 +374,24 @@ app.get('/api/dungeon/log', async (req, res) => {
       .limit(50)
       .toArray();
 
-    // Enrich combat log with avatar details including imageUrl
     const enrichedLog = await Promise.all(combatLog.map(async (entry) => {
-      const escapedActor = escapeRegExp(entry.actor);
-      const escapedTarget = entry.target ? escapeRegExp(entry.target) : null;
-      
+      // Try exact match first, then case-insensitive
       const [actor, target] = await Promise.all([
         db.collection('avatars').findOne(
-          { name: { $regex: `^${escapedActor}$`, $options: 'i' } },
-          { projection: { name: 1, imageUrl: 1 } }
+          { name: entry.actor },
+          { projection: { _id: 1, name: 1, imageUrl: 1, emoji: 1 } }
+        ) || db.collection('avatars').findOne(
+          { name: { $regex: `^${escapeRegExp(entry.actor)}$`, $options: 'i' } },
+          { projection: { _id: 1, name: 1, imageUrl: 1, emoji: 1 } }
         ),
-        escapedTarget ? db.collection('avatars').findOne(
-          { name: { $regex: `^${escapedTarget}$`, $options: 'i' } },
-          { projection: { name: 1, imageUrl: 1 } }
+        entry.target ? (
+          db.collection('avatars').findOne(
+            { name: entry.target },
+            { projection: { _id: 1, name: 1, imageUrl: 1, emoji: 1 } }
+          ) || db.collection('avatars').findOne(
+            { name: { $regex: `^${escapeRegExp(entry.target)}$`, $options: 'i' } },
+            { projection: { _id: 1, name: 1, imageUrl: 1, emoji: 1 } }
+          )
         ) : null
       ]);
 
@@ -480,13 +402,16 @@ app.get('/api/dungeon/log', async (req, res) => {
 
       return {
         ...entry,
-        avatarName: actor?.name || entry.actor,
-        imageUrl: actor?.imageUrl || null,
-        thumbnailUrl: actorThumb,
+        actorId: actor?._id || null,
+        targetId: target?._id || null,
+        actorName: actor?.name || entry.actor,
+        actorEmoji: actor?.emoji || null,
+        actorImageUrl: actor?.imageUrl || null,
+        actorThumbnailUrl: actorThumb,
         targetName: target?.name || entry.target,
+        targetEmoji: target?.emoji || null,
         targetImageUrl: target?.imageUrl || null,
         targetThumbnailUrl: targetThumb,
-        locationName: entry.location || entry.target // fallback to target if location not specified
       };
     }));
 
@@ -497,72 +422,114 @@ app.get('/api/dungeon/log', async (req, res) => {
   }
 });
 
-// Add new family tree endpoint
-app.get('/api/family-tree', async (req, res) => {
+// Replace family-tree endpoint with tribes endpoint
+app.get('/api/tribes', async (req, res) => {
   try {
     if (!db) throw new Error('Database not connected');
 
-    const minMembers = parseInt(req.query.minMembers) || 1;
-    const parentEmoji = req.query.emoji;
-    const maxDepth = parseInt(req.query.maxDepth) || 999;
-
+    // Get all avatars with emojis and group them
     const pipeline = [
       {
         $match: {
-          emoji: { $exists: true }
+          emoji: { $exists: true, $ne: null, $ne: '' }
         }
       },
       {
-        $graphLookup: {
-          from: 'avatars',
-          startWith: '$emoji',
-          connectFromField: 'emoji',
-          connectToField: 'parentEmoji',
-          as: 'descendants',
-          maxDepth: maxDepth - 1
+        $group: {
+          _id: '$emoji',
+          count: { $sum: 1 },
+          members: { $push: '$$ROOT' }
+        }
+      },
+      {
+        $match: {
+          count: { $gt: 0 }
+        }
+      },
+      {
+        $sort: {
+          count: -1
         }
       }
     ];
 
-    if (parentEmoji) {
-      pipeline.unshift({ $match: { emoji: parentEmoji } });
-    }
+    const tribes = await db.collection('avatars').aggregate(pipeline).toArray();
 
-    if (minMembers > 1) {
-      pipeline.push({
-        $match: {
-          $expr: { $gte: [{ $size: '$descendants' }, minMembers - 1] }
-        }
-      });
-    }
+    // Add thumbnails for members
+    const tribesWithThumbs = await Promise.all(
+      tribes.map(async tribe => ({
+        emoji: tribe._id,
+        count: tribe.count,
+        members: await Promise.all(
+          tribe.members.map(async member => ({
+            ...member,
+            thumbnailUrl: await generateThumbnail(member.imageUrl)
+          }))
+        )
+      }))
+    );
 
-    const familyTrees = await db.collection('avatars').aggregate(pipeline).toArray();
-
-    // Transform into hierarchical structure
-    const transformToTree = (avatar, depth = 0) => {
-      if (depth >= maxDepth) return null;
-      
-      const children = familyTrees
-        .filter(a => a.parentEmoji === avatar.emoji)
-        .map(child => transformToTree(child, depth + 1))
-        .filter(Boolean);
-
-      return {
-        id: avatar._id,
-        name: avatar.name,
-        emoji: avatar.emoji,
-        imageUrl: avatar.imageUrl,
-        children: children
-      };
-    };
-
-    const roots = familyTrees
-      .filter(a => !a.parentEmoji)
-      .map(root => transformToTree(root));
-
-    res.json(roots);
+    res.json(tribesWithThumbs);
   } catch (error) {
-    console.error('Family tree error:', error);
+    console.error('Tribes error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a health check endpoint
+app.get('/api/health', (req, res) => {
+  if (!db) {
+    return res.status(503).json({ 
+      status: 'error',
+      message: 'Database not connected',
+      mongo: process.env.MONGO_URI ? 'configured' : 'not configured'
+    });
+  }
+  res.json({ 
+    status: 'ok',
+    database: 'connected'
+  });
+});
+
+// Add new endpoint for full avatar details
+app.get('/api/avatars/:id', async (req, res) => {
+  try {
+    const avatarId = new ObjectId(req.params.id);
+    const avatar = await db.collection('avatars').findOne({ _id: avatarId });
+    
+    if (!avatar) {
+      return res.status(404).json({ error: 'Avatar not found' });
+    }
+
+    // Get ancestry, variants and stats in parallel
+    const [ancestry, variants, stats] = await Promise.all([
+      getAvatarAncestry(db, avatarId),
+      db.collection('avatars')
+        .find({ name: avatar.name })
+        .sort({ createdAt: -1 })
+        .toArray(),
+      db.collection('dungeon_stats').findOne({
+        $or: [
+          { avatarId: avatarId },
+          { avatarId: avatarId.toString() }
+        ]
+      })
+    ]);
+
+    const thumbnails = await Promise.all(
+      variants.map(v => generateThumbnail(v.imageUrl))
+    );
+
+    res.json({
+      ...avatar,
+      ancestry,
+      stats: stats || { attack: 0, defense: 0, hp: 0 },
+      variants: variants.map((v, i) => ({
+        ...v,
+        thumbnailUrl: thumbnails[i]
+      }))
+    });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -579,6 +546,13 @@ process.on('SIGINT', async () => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+// Update server start logging
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Server running at http://localhost:${port}`);
+  console.log('Available endpoints:');
+  console.log('- GET /api/health');
+  console.log('- GET /api/leaderboard');
+  console.log('- GET /api/avatar/:id/narratives');
+  console.log('- GET /api/dungeon/log');
+  console.log('- GET /api/tribes');
 });

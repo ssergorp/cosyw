@@ -46,12 +46,12 @@ export default function(db) {
     try {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 50;
-      const skip = (page - 1) * limit;
+      const skip = ((page - 1) * limit) + 1;
 
       const [avatars, total] = await Promise.all([
         db.collection('avatars')
           .find({})
-          .sort({ messageCount: -1 })
+          .sort({ emoji: -1 })
           .skip(skip)
           .limit(limit)
           .toArray(),

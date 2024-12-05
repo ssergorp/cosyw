@@ -83,7 +83,8 @@ export class OpenRouterService {
         ...options,
       });
     if (!response || !response.choices || response.choices.length === 0) {
-      throw new Error('Invalid response from OpenRouter during chat.');
+      console.error('Invalid response from OpenRouter during chat.');
+      return null;
     }
     return response.choices[0].message.content.trim() || '...';
   }

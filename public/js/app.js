@@ -6,6 +6,18 @@ function sanitizeNumber(value, fallback = 0) {
   return !isNaN(num) && isFinite(num) ? num : fallback;
 }
 
+// Add this helper function for safe markdown rendering
+function MarkdownContent({ content }) {
+  const sanitizedContent = marked.parse(content || '').replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  
+  return (
+    <div 
+      className="prose prose-invert max-w-none"
+      dangerouslySetInnerHTML={{ __html: sanitizedContent }} 
+    />
+  );
+}
+
 function TierBadge({ tier }) {
   const colors = {
     S: 'bg-purple-600',  // legendary
@@ -89,233 +101,311 @@ function TierFilter({ selectedTier, onTierChange }) {
   );
 }
 
-function AvatarDetailModal({ avatar, onClose }) {
-  const [reflections, setReflections] = useState([]);
-  const [dungeonStats, setDungeonStats] = useState({ attack: 0, defense: 0, hp: 0 });
+// Update ActivityFeed to include dungeon actions and markdown
+function ActivityFeed({ messages, memories, narratives, dungeonActions }) {
   const formatDate = (date) => new Date(date).toLocaleString();
 
+  // Safely extract arrays from potentially nested response objects
+  const messagesList = Array.isArray(messages) ? messages : (messages?.messages || []);
+  const memoriesList = Array.isArray(memories) ? memories : (memories?.memories || []);
+  const narrativesList = Array.isArray(narratives) ? narratives : (narratives?.narratives || []);
+  const actionsList = Array.isArray(dungeonActions) ? dungeonActions : (dungeonActions?.actions || []);
+
+  // Combine and sort all activities
+  const activities = [
+    ...messagesList.map(m => ({ 
+      type: 'message', 
+      content: m.content, 
+      timestamp: new Date(m.timestamp),
+      icon: '💭'
+    })),
+    ...memoriesList.map(m => ({ 
+      type: 'memory', 
+      content: m.memory, 
+      timestamp: new Date(m.timestamp),
+      icon: '🧠'
+    })),
+    ...narrativesList.map(n => ({ 
+      type: 'narrative', 
+      content: n.content, 
+      timestamp: new Date(n.timestamp),
+      icon: '📖'
+    })),
+    ...actionsList.map(d => ({
+      type: 'dungeon',
+      content: `**${d.result}** ${d.targetName ? `against ${d.targetName}` : ''}`,
+      timestamp: new Date(d.timestamp),
+      icon: '⚔️'
+    }))
+  ].sort((a, b) => b.timestamp - a.timestamp);
+
+  return (
+    <div className="space-y-4">
+      {activities.map((activity, i) => (
+        <div key={i} className="bg-gray-700 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm text-gray-400">{activity.icon}</span>
+            <span className="text-xs text-gray-500">{formatDate(activity.timestamp)}</span>
+            <span className="text-xs text-gray-400 ml-auto">{activity.type}</span>
+          </div>
+          <MarkdownContent content={activity.content} />
+        </div>
+      ))}
+      {activities.length === 0 && (
+        <div className="text-gray-500 text-center">No recent activity</div>
+      )}
+    </div>
+  );
+}
+
+// Add helper function to clip description
+function clipDescription(text) {
+  if (!text) return '';
+  const doubleNewline = text.indexOf('\n\n');
+  return doubleNewline > -1 ? text.slice(0, doubleNewline) : text;
+}
+
+// Add an AncestryChain component
+function AncestryChain({ ancestry }) {
+  if (!ancestry?.length) return null;
+
+  return (
+    <div className="bg-gray-700 rounded-lg p-4 mb-4">
+      <h3 className="text-xl font-bold mb-3">Ancestry</h3>
+      <div className="flex items-center gap-2 overflow-x-auto pb-2">
+        {ancestry.slice().reverse().map((ancestor, index, array) => (
+          <React.Fragment key={ancestor._id}>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <img
+                src={ancestor.imageUrl}
+                alt={ancestor.name}
+                className="w-8 h-8 rounded-full object-cover"
+              />
+              <div className="text-sm">
+                <div className="font-medium">{ancestor.name}</div>
+                <div className="text-gray-400 text-xs">{ancestor.emoji}</div>
+              </div>
+            </div>
+            {index < array.length - 1 && (
+              <span className="text-gray-500 mx-2">→</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Add a StatsDisplay component
+function StatsDisplay({ stats, size = "small" }) {
+  const { hp = 0, attack = 0, defense = 0 } = stats || {};
+  
+  if (size === "small") {
+    return (
+      <div className="flex gap-2 text-xs text-gray-400">
+        {hp > 0 && <span title="HP">❤️ {hp}</span>}
+        {attack > 0 && <span title="Attack">⚔️ {attack}</span>}
+        {defense > 0 && <span title="Defense">🛡️ {defense}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {hp > 0 && (
+        <div className="flex justify-center">
+          <ProgressRing 
+            value={hp}
+            maxValue={100}
+            size={80}
+            centerContent={
+              <div className="text-lg font-bold">❤️ {hp}</div>
+            }
+          />
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <div className="bg-gray-800 rounded p-2">
+          <div className="text-sm text-gray-400">Attack</div>
+          <div className="text-xl">⚔️ {attack}</div>
+        </div>
+        <div className="bg-gray-800 rounded p-2">
+          <div className="text-sm text-gray-400">Defense</div>
+          <div className="text-xl">🛡️ {defense}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Update the modal layout
+function AvatarDetailModal({ avatar, onClose }) {
+  const [currentVariantIndex, setCurrentVariantIndex] = useState(0);
+  const [activityData, setActivityData] = useState({
+    messages: [],
+    memories: [],
+    narratives: [],
+    dungeonStats: avatar?.stats || { attack: 0, defense: 0, hp: 0 },
+    dungeonActions: []
+  });
+
+  const variants = avatar?.variants || [avatar];
+  const currentVariant = variants[currentVariantIndex];
+
   useEffect(() => {
-    if (avatar) {
-      fetch(`/api/avatar/${avatar._id}/reflections`)
-        .then(res => res.json())
-        .then(data => {
-          setReflections(data.reflections);
-          setDungeonStats(data.dungeonStats);
+    if (avatar?._id) {
+      Promise.all([
+        fetch(`/api/avatar/${avatar._id}/narratives`).then(r => r.json()),
+        fetch(`/api/avatar/${avatar._id}/memories`).then(r => r.json()),
+        fetch(`/api/avatar/${avatar._id}/dungeon-actions`).then(r => r.json())
+      ]).then(([narrativeData, memoryData, dungeonActions]) => {
+        setActivityData({
+          messages: narrativeData?.recentMessages || [],
+          memories: memoryData?.memories || [],
+          narratives: narrativeData?.narratives || [],
+          dungeonStats: avatar?.stats || narrativeData?.dungeonStats || { attack: 0, defense: 0, hp: 0 },
+          dungeonActions: dungeonActions || []
         });
+      });
     }
-  }, [avatar]);
+  }, [avatar?._id]);
 
-  if (!avatar) return null;
+  // Add automatic carousel
+  useEffect(() => {
+    if (variants.length > 1) {
+      const interval = setInterval(() => {
+        setCurrentVariantIndex((prev) => (prev + 1) % variants.length);
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [variants.length]);
 
-  const { 
-    attack = 0, 
-    defense = 0, 
-    hp = 0, 
-    lives = null,
-    status
-  } = avatar;
-
-  // Sanitize all numerical values
-  const safeHP = sanitizeNumber(hp);
-  const safeLives = sanitizeNumber(lives);
-  const safeAttack = sanitizeNumber(dungeonStats.attack || attack);
-  const safeDefense = sanitizeNumber(dungeonStats.defense || defense);
-  const currentHP = Math.min(Math.max(safeHP, 0), 100);
-
-  const isDead = lives === 0;
-  const showHPRing = lives !== null;
+  function VariantSlide({ variant, active }) {
+    return (
+      <div className={`absolute inset-0 transition-opacity duration-500 ${
+        active ? 'opacity-100' : 'opacity-0'
+      }`}>
+        <img 
+          src={variant.imageUrl}
+          alt={variant.name}
+          className="w-full aspect-[2/3] object-cover rounded-lg"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="flex gap-6">
-          <div className="w-1/3">
-            <img 
-              src={avatar.imageUrl}
-              alt={avatar.name}
-              className="w-full aspect-[2/3] object-cover rounded-lg"
-            />
-            {/* Stats section */}
-          </div>
-          <div className="w-2/3">
-            <div className="flex justify-between items-start mb-4">
-              <div className="flex items-center space-x-4">
-                <img 
-                  src={avatar.imageUrl} 
-                  alt={avatar.name}
-                  className="w-24 h-24 rounded-full object-cover"
-                />
-                <div>
-                  <h2 className="text-3xl font-bold">{avatar.name} {avatar.emoji}</h2>
-                  <div className="flex gap-2 mt-2">
-                    {avatar.emojis?.map((emoji, i) => (
-                      <span key={i} className="text-2xl">{emoji}</span>
-                    ))}
-                  </div>
-                  <p className="text-gray-400">Messages: {avatar.messageCount}</p>
-                  <p className="text-gray-500">Created: {formatDate(avatar.createdAt)}</p>
-                  {/* Display Dungeon Stats */}
-                  <div className="mt-4 flex items-center gap-6">
-                    {isDead ? (
-                      <div className="text-red-500 text-2xl font-bold">☠️ Dead</div>
-                    ) : showHPRing ? (
-                      <ProgressRing 
-                        value={currentHP}
-                        maxValue={100}
-                        size={100}
-                        color={currentHP < 33 ? '#EF4444' : '#60A5FA'}
-                        centerContent={
-                          <div>
-                            <div className="text-2xl font-bold">{currentHP}</div>
-                            <div className="text-sm text-gray-400">{safeLives} ❣️</div>
-                          </div>
-                        }
-                      />
-                    ) : null}
-                    <div className="space-y-2">
-                      {safeAttack > 0 && (
-                        <div className="flex gap-2 items-center">
-                          <span className="text-gray-400 w-20">Attack:</span>
-                          <span>{Array(Math.min(Math.floor(safeAttack/5), 5)).fill('⚔️').join('')}</span>
-                          <span className="text-gray-500">({safeAttack})</span>
-                        </div>
-                      )}
-                      {safeDefense > 0 && (
-                        <div className="flex gap-2 items-center">
-                          <span className="text-gray-400 w-20">Defense:</span>
-                          <span>{Array(Math.min(Math.floor(safeDefense/5), 5)).fill('🛡️').join('')}</span>
-                          <span className="text-gray-500">({safeDefense})</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">×</button>
-            </div>
-
-            {/* Add alternate avatars section if they exist */}
-            {avatar.alternateAvatars?.length > 0 && (
-              <div className="mt-4 bg-gray-700 rounded-lg p-4">
-                <h3 className="text-xl font-bold mb-2">Alternate Avatars</h3>
-                <div className="flex flex-wrap gap-4">
-                  {avatar.alternateAvatars.map((altAvatar, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <img 
-                        src={altAvatar.imageUrl} 
-                        alt={altAvatar.name}
-                        className="w-12 h-12 rounded-full object-cover"
-                      />
-                      <div>
-                        <div className="font-bold">{altAvatar.emoji}</div>
-                        <div className="text-sm text-gray-400">Tier {calculateTier(altAvatar)}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              <div className="space-y-4">
-                <div className="bg-gray-700 rounded-lg p-4">
-                  <h3 className="text-xl font-bold mb-2">Description</h3>
-                  <p className="text-gray-300">{avatar.description}</p>
-                </div>
-
-                <div className="bg-gray-700 rounded-lg p-4">
-                  <h3 className="text-xl font-bold mb-2">Personality</h3>
-                  <p className="text-gray-300">{avatar.dynamicPersonality}</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="bg-gray-700 rounded-lg p-4">
-                  <h3 className="text-xl font-bold mb-2">Recent Messages</h3>
-                  <div className="space-y-2">
-                    {(avatar.recentMessages || []).map((msg, i) => (
-                      <div key={i} className="text-sm">
-                        <p className="text-gray-300">{msg.content}</p>
-                        <p className="text-gray-500 text-xs">{formatDate(msg.timestamp)}</p>
-                      </div>
-                    ))}
-                    {(!avatar.recentMessages || avatar.recentMessages.length === 0) && (
-                      <p className="text-gray-500">No recent messages</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="bg-gray-700 rounded-lg p-4">
-                  <h3 className="text-xl font-bold mb-2">Recent Reflections</h3>
-                  <div className="space-y-2">
-                    {reflections.map((reflection, i) => (
-                      <div key={i} className="border-b border-gray-600 pb-2 mb-2 last:border-0">
-                        <p className="text-gray-300">{reflection.reflectionContent}</p>
-                        <p className="text-gray-500 text-xs">{formatDate(reflection.timestamp)}</p>
-                      </div>
-                    ))}
-                    {reflections.length === 0 && (
-                      <p className="text-gray-500">No reflections yet</p>
-                    )}
-                  </div>
-                </div>
+        {/* Header row */}
+        <div className="flex justify-between items-start mb-6">
+          <div className="flex items-center gap-4">
+            <span className="text-3xl">{avatar.emoji}</span>
+            <div>
+              <h2 className="text-2xl font-bold">{avatar.name}</h2>
+              <div className="flex items-center gap-2">
+                <TierBadge tier={avatar.tier} />
+                <span className="text-gray-400">✉️ {avatar.messageCount}</span>
               </div>
             </div>
           </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">×</button>
         </div>
-      </div>
-    </div>
-  );
-}
 
-function AvatarCard({ avatar, onSelect }) {
-  const { 
-    attack = 0, 
-    defense = 0, 
-    hp = 0, 
-    lives = null,
-    status
-  } = avatar;
+        {/* Add Ancestry Chain */}
+        <AncestryChain ancestry={avatar.ancestry} />
 
-  // Sanitize all numerical values
-  const safeHP = sanitizeNumber(hp);
-  const safeLives = sanitizeNumber(lives);
-  const safeAttack = sanitizeNumber(attack);
-  const safeDefense = sanitizeNumber(defense);
-  const currentHP = Math.min(Math.max(safeHP, 0), 100); // Clamp between 0-100
+        <div className="grid grid-cols-3 gap-6">
+          {/* Left column: Carousel and Stats */}
+          <div className="space-y-4">
+            {/* Image and description carousel */}
+            <div className="relative">
+              <div className="relative aspect-[2/3]">
+                {variants.map((variant, idx) => (
+                  <VariantSlide 
+                    key={idx}
+                    variant={variant}
+                    active={idx === currentVariantIndex}
+                  />
+                ))}
+                {variants.length > 1 && (
+                  <>
+                    <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 z-10">
+                      {variants.map((_, idx) => (
+                        <button
+                          key={idx}
+                          className={`w-2 h-2 rounded-full transition-colors ${
+                            idx === currentVariantIndex ? 'bg-white' : 'bg-gray-500'
+                          }`}
+                          onClick={() => setCurrentVariantIndex(idx)}
+                        />
+                      ))}
+                    </div>
+                    <div className="absolute inset-y-0 left-0 right-0 flex items-center justify-between px-2">
+                      <button
+                        className="bg-black bg-opacity-50 rounded-full p-2 hover:bg-opacity-75 z-10"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCurrentVariantIndex((prev) => (prev - 1 + variants.length) % variants.length);
+                        }}
+                      >
+                        ←
+                      </button>
+                      <button
+                        className="bg-black bg-opacity-50 rounded-full p-2 hover:bg-opacity-75 z-10"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCurrentVariantIndex((prev) => (prev + 1) % variants.length);
+                        }}
+                      >
+                        →
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
 
-  // Only show HP ring if lives is defined, show dead status if lives is 0
-  const isDead = lives === 0;
-  const showHPRing = lives !== null;
+            {/* Stats */}
+            <div className="bg-gray-700 rounded-lg p-4">
+              <h3 className="text-xl font-bold mb-4">Stats</h3>
+              <StatsDisplay stats={avatar.stats} size="large" />
+            </div>
+          </div>
 
-  return (
-    <div onClick={() => onSelect(avatar)} 
-         className="bg-gray-800 rounded-lg p-3 cursor-pointer hover:bg-gray-700 transition-colors">
-      <div className="flex items-center gap-3">
-        <img 
-          src={avatar.thumbnailUrl || avatar.imageUrl} 
-          alt={avatar.name} 
-          className="w-12 h-12 rounded-full object-cover"
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="text-lg font-bold truncate">{avatar.name}</h3>
-            <div className="flex gap-1">
-              {avatar.emojis?.map((emoji, i) => (
-                <span key={i}>{emoji}</span>
+          {/* Right columns: Description and Activity Feed */}
+          <div className="col-span-2 space-y-4">
+            <div className="bg-gray-700 rounded-lg p-4">
+              {variants.map((variant, idx) => (
+                <div
+                  key={idx}
+                  className={`transition-opacity duration-500 ${
+                    idx === currentVariantIndex ? 'opacity-100 block' : 'opacity-0 hidden'
+                  }`}
+                >
+                  <h3 className="text-xl font-bold mb-2">Description</h3>
+                  <div className="prose prose-invert max-w-none">
+                    <MarkdownContent content={clipDescription(variant.description)} />
+                    {variant.dynamicPersonality && (
+                      <div className="mt-4 text-gray-400">
+                        <h4 className="font-bold mb-1">Personality</h4>
+                        <MarkdownContent content={clipDescription(variant.dynamicPersonality)} />
+                      </div>
+                    )}
+                  </div>
+                </div>
               ))}
             </div>
-            <TierBadge tier={avatar.tier} />
-          </div>
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <span>✉️ {avatar.messageCount}</span>
-            {avatar.attack > 0 && <span>⚔️ {avatar.attack}</span>}
-            {avatar.defense > 0 && <span>🛡️ {avatar.defense}</span>}
-            {avatar.lives !== null && (
-              <span className={avatar.lives === 0 ? 'text-red-500' : ''}>
-                ❣️ {avatar.lives}
-              </span>
-            )}
+
+            <div className="bg-gray-700 rounded-lg p-4">
+              <h3 className="text-xl font-bold mb-4">Recent Activity</h3>
+              <ActivityFeed 
+                messages={activityData.messages}
+                memories={activityData.memories}
+                narratives={activityData.narratives}
+                dungeonActions={activityData.dungeonActions}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -323,7 +413,202 @@ function AvatarCard({ avatar, onSelect }) {
   );
 }
 
-function CombatLog() {
+// Update AvatarCard to show stats
+function AvatarCard({ avatar, onSelect }) {
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const allAvatars = [avatar, ...(avatar.alternateAvatars || [])];
+  
+  useEffect(() => {
+    if (allAvatars.length > 1) {
+      const interval = setInterval(() => {
+        setCurrentImageIndex((prev) => (prev + 1) % allAvatars.length);
+      }, 3000); // Change image every 3 seconds
+      return () => clearInterval(interval);
+    }
+  }, [allAvatars.length]);
+
+  const currentAvatar = allAvatars[currentImageIndex];
+  
+  return (
+    <div onClick={() => onSelect(avatar)} 
+         className="bg-gray-800 rounded-lg p-2 cursor-pointer hover:bg-gray-700 transition-colors">
+      <div className="relative mb-2">
+        <img 
+          src={currentAvatar.thumbnailUrl || currentAvatar.imageUrl} 
+          alt={currentAvatar.name} 
+          className="w-full aspect-square object-cover rounded-lg"
+        />
+        {allAvatars.length > 1 && (
+          <span className="absolute top-1 right-1 bg-blue-500 text-xs rounded-full w-5 h-5 flex items-center justify-center">
+            {allAvatars.length}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center gap-1 justify-between">
+          <h3 className="text-sm font-bold truncate">{avatar.name}</h3>
+          <TierBadge tier={avatar.tier} />
+        </div>
+        <div className="flex items-center gap-1 text-xs text-gray-400">
+          <span>✉️ {avatar.messageCount}</span>
+          {avatar.emoji && <span>{avatar.emoji}</span>}
+        </div>
+        <StatsDisplay stats={avatar.stats} size="small" />
+      </div>
+    </div>
+  );
+}
+
+// Add AvatarSearch component
+function AvatarSearch({ onSelect }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const searchTimeout = useRef(null);
+
+  useEffect(() => {
+    if (query.length < 2) {
+      setResults([]);
+      return;
+    }
+
+    clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const response = await fetch(`/api/avatars/search?name=${encodeURIComponent(query)}`);
+        const data = await response.json();
+        setResults(data.avatars);
+      } catch (error) {
+        console.error('Search error:', error);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(searchTimeout.current);
+  }, [query]);
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search avatars..."
+        className="w-full px-4 py-2 bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      {loading && (
+        <div className="absolute right-3 top-3">
+          <div className="animate-spin h-4 w-4 border-2 border-blue-500 rounded-full border-t-transparent"></div>
+        </div>
+      )}
+      {results.length > 0 && (
+        <div className="absolute mt-1 w-full bg-gray-800 rounded-lg shadow-lg z-50 max-h-60 overflow-auto">
+          {results.map(avatar => (
+            <div
+              key={avatar._id}
+              className="flex items-center gap-3 p-2 hover:bg-gray-700 cursor-pointer"
+              onClick={() => {
+                onSelect(avatar);
+                setQuery('');
+                setResults([]);
+              }}
+            >
+              <img 
+                src={avatar.thumbnailUrl} 
+                alt={avatar.name}
+                className="w-10 h-10 rounded-full object-cover"
+              />
+              <div>
+                <div className="font-medium">{avatar.name}</div>
+                {avatar.emoji && (
+                  <div className="text-sm text-gray-400">{avatar.emoji}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Update CombatLogEntry component
+function CombatLogEntry({ entry, onAvatarClick }) {
+  const handleClick = (avatar, event) => {
+    event.stopPropagation();
+    if (avatar && onAvatarClick) {
+      onAvatarClick(avatar);
+    }
+  };
+
+  const CombatantDisplay = ({ name, emoji, imageUrl, thumbnailUrl, id }) => (
+    <div className="flex items-center gap-2">
+      <div className="relative">
+        {imageUrl ? (
+          <img 
+            src={thumbnailUrl || imageUrl} 
+            alt={name}
+            className="w-10 h-10 rounded-full object-cover cursor-pointer hover:opacity-75 border-2 border-gray-700"
+            onClick={(e) => handleClick({ _id: id, name, imageUrl }, e)}
+          />
+        ) : (
+          <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
+            {emoji || '👤'}
+          </div>
+        )}
+      </div>
+      <div>
+        <span 
+          className="text-sm text-gray-300 hover:text-white cursor-pointer font-medium"
+          onClick={(e) => handleClick({ _id: id, name, imageUrl }, e)}
+        >
+          {name}
+        </span>
+        {emoji && (
+          <div className="text-xs text-gray-400">{emoji}</div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-4 transition-colors hover:bg-gray-750">
+      <div className="flex items-center gap-3">
+        <CombatantDisplay 
+          name={entry.actorName}
+          emoji={entry.actorEmoji}
+          imageUrl={entry.actorImageUrl}
+          thumbnailUrl={entry.actorThumbnailUrl}
+          id={entry.actorId}
+        />
+
+        <div className="flex-grow flex items-center justify-center gap-2 px-4">
+          <span className="text-gray-400">⚔️</span>
+          <span className="text-sm font-medium text-gray-300">{entry.result}</span>
+        </div>
+
+        {entry.targetName && (
+          <CombatantDisplay 
+            name={entry.targetName}
+            emoji={entry.targetEmoji}
+            imageUrl={entry.targetImageUrl}
+            thumbnailUrl={entry.targetThumbnailUrl}
+            id={entry.targetId}
+          />
+        )}
+      </div>
+      
+      <div className="mt-2 text-xs text-gray-500 text-right">
+        {new Date(entry.timestamp).toLocaleString()}
+      </div>
+    </div>
+  );
+}
+
+// Update CombatLog component
+function CombatLog({ onAvatarSelect }) {
   const [combatLog, setCombatLog] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -341,7 +626,7 @@ function CombatLog() {
     };
 
     fetchCombatLog();
-    const interval = setInterval(fetchCombatLog, 5000); // Refresh every 5 seconds
+    const interval = setInterval(fetchCombatLog, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -355,49 +640,22 @@ function CombatLog() {
 
   return (
     <div className="space-y-4">
-      {combatLog.map((entry, index) => (
-        <CombatLogEntry key={index} entry={entry} />
-      ))}
-      {combatLog.length === 0 && (
-        <div className="text-center text-gray-500">No combat actions yet</div>
-      )}
-    </div>
-  );
-}
+      <h2 className="text-2xl font-bold mb-6">Recent Combat Actions</h2>
 
-function CombatLogEntry({ entry }) {
-  return (
-    <div className="bg-gray-800 rounded-lg p-3">
-      <div className="flex items-center gap-3">
-        {entry.imageUrl && (
-          <img 
-            src={entry.thumbnailUrl || entry.imageUrl} 
-            alt={entry.avatarName}
-            className="w-10 h-10 rounded-full object-cover"
+      <div className="space-y-4 max-w-3xl mx-auto">
+        {combatLog.map((entry, index) => (
+          <CombatLogEntry 
+            key={index} 
+            entry={entry}
+            onAvatarClick={onAvatarSelect}
           />
+        ))}
+        {combatLog.length === 0 && (
+          <div className="text-center py-8 text-gray-500">
+            <div className="text-4xl mb-2">⚔️</div>
+            <div>No combat actions yet</div>
+          </div>
         )}
-        <div className="flex-1">
-          <div className="flex justify-between items-start">
-            <span>{entry.result}</span>
-            <span className="text-xs text-gray-400">
-              {new Date(entry.timestamp).toLocaleTimeString()}
-            </span>
-          </div>
-          <div className="text-sm text-gray-400 flex gap-2 items-center">
-            {entry.avatarName}
-            {entry.targetImageUrl && (
-              <>
-                <span>➜</span>
-                <img 
-                  src={entry.targetThumbnailUrl || entry.targetImageUrl} 
-                  alt={entry.targetName}
-                  className="w-6 h-6 rounded-full object-cover"
-                />
-                <span>{entry.targetName}</span>
-              </>
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -408,9 +666,7 @@ function ViewToggle({ currentView, onViewChange }) {
     <div className="flex justify-center gap-4 mb-8">
       <button
         className={`px-4 py-2 rounded ${
-          currentView === 'leaderboard' 
-            ? 'bg-blue-600 text-white' 
-            : 'bg-gray-700 text-gray-300'
+          currentView === 'leaderboard' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'
         }`}
         onClick={() => onViewChange('leaderboard')}
       >
@@ -418,9 +674,7 @@ function ViewToggle({ currentView, onViewChange }) {
       </button>
       <button
         className={`px-4 py-2 rounded ${
-          currentView === 'combat' 
-            ? 'bg-red-600 text-white' 
-            : 'bg-gray-700 text-gray-300'
+          currentView === 'combat' ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300'
         }`}
         onClick={() => onViewChange('combat')}
       >
@@ -428,13 +682,11 @@ function ViewToggle({ currentView, onViewChange }) {
       </button>
       <button
         className={`px-4 py-2 rounded ${
-          currentView === 'families' 
-            ? 'bg-green-600 text-white' 
-            : 'bg-gray-700 text-gray-300'
+          currentView === 'tribes' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300'
         }`}
-        onClick={() => onViewChange('families')}
+        onClick={() => onViewChange('tribes')}
       >
-        Families
+        Tribes
       </button>
     </div>
   );
@@ -469,105 +721,98 @@ function FamilyCard({ family, onSelect }) {
   );
 }
 
-function FamilyView() {
-  const [families, setFamilies] = useState([]);
-  const [selectedFamily, setSelectedFamily] = useState(null);
+// Update TribesView to use shared avatar click handler
+function TribesView({ onAvatarSelect }) {
+  const [tribes, setTribes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedEmoji, setSelectedEmoji] = useState(null);
 
   useEffect(() => {
-    const fetchFamilies = async () => {
+    const fetchTribes = async () => {
       try {
-        const response = await fetch('/api/families');
+        const response = await fetch('/api/tribes');
         const data = await response.json();
-        setFamilies(data);
+        setTribes(data);
       } catch (error) {
-        console.error('Error fetching families:', error);
+        console.error('Error fetching tribes:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchFamilies();
+    fetchTribes();
   }, []);
 
-  if (loading) {
-    return (
-      <div className="text-center py-4">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+  if (loading) return (
+    <div className="text-center py-4">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+    </div>
+  );
+
+  const selectedTribe = selectedEmoji ? tribes.find(t => t.emoji === selectedEmoji) : null;
+
+  return (
+    <div>
+      {/* Emoji selector */}
+      <div className="flex flex-wrap gap-4 mb-8 justify-center">
+        {tribes.map(tribe => (
+          <button
+            key={tribe.emoji}
+            onClick={() => setSelectedEmoji(tribe.emoji)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-full ${
+              selectedEmoji === tribe.emoji 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-gray-700 hover:bg-gray-600'
+            }`}
+          >
+            <span className="text-2xl">{tribe.emoji}</span>
+            <span className="text-sm font-medium">{tribe.count}</span>
+          </button>
+        ))}
       </div>
-    );
-  }
 
-  const buildFamilyTree = (families) => {
-    // Create a map of all avatars by ID for quick lookup
-    const avatarMap = new Map();
-    families.forEach(family => {
-      avatarMap.set(family._id.toString(), family);
-      family.descendants.forEach(desc => {
-        avatarMap.set(desc._id.toString(), desc);
-      });
-    });
-
-    // For each avatar, organize into parent-child relationships
-    const nodes = new Map();
-    const rootNodes = [];
-
-    avatarMap.forEach((avatar) => {
-      if (!nodes.has(avatar._id.toString())) {
-        nodes.set(avatar._id.toString(), { ...avatar, children: [] });
-      }
-
-      const node = nodes.get(avatar._id.toString());
-
-      if (!avatar.parents || avatar.parents.length === 0) {
-        rootNodes.push(node);
-      } else {
-        avatar.parents.forEach(parentId => {
-          const parentNode = nodes.get(parentId.toString()) || { children: [] };
-          if (!nodes.has(parentId.toString())) {
-            nodes.set(parentId.toString(), parentNode);
-          }
-          parentNode.children = parentNode.children || [];
-          parentNode.children.push(node);
-        });
-      }
-    });
-
-    return rootNodes;
-  };
-
-  const renderFamilyTree = (node, depth = 0) => {
-    return (
-      <div key={node._id} className="ml-6 border-l-2 border-gray-700">
-        <div className="flex items-center gap-3 p-2 hover:bg-gray-700 rounded">
-          <img 
-            src={node.thumbnailUrl || node.imageUrl}
-            alt={node.name}
-            className="w-10 h-10 rounded-full object-cover"
-          />
-          <div>
-            <span className="font-bold">{node.name}</span>
-            <span className="text-gray-400 ml-2">({node.children?.length || 0} descendants)</span>
+      {/* Selected tribe details */}
+      {selectedTribe ? (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="flex items-center gap-4 mb-6">
+            <span className="text-4xl">{selectedTribe.emoji}</span>
+            <div>
+              <h2 className="text-2xl font-bold">{selectedTribe.count} Members</h2>
+              <p className="text-gray-400">Click an avatar to view details</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
+            {selectedTribe.members.map(member => (
+              <div
+                key={member._id}
+                onClick={() => onAvatarSelect(member)}
+                className="cursor-pointer group"
+              >
+                <div className="aspect-square overflow-hidden rounded-lg mb-2">
+                  <img
+                    src={member.thumbnailUrl}
+                    alt={member.name}
+                    className="w-full h-full object-cover transform group-hover:scale-110 transition-transform"
+                  />
+                </div>
+                <div className="text-center">
+                  <div className="font-medium truncate">{member.name}</div>
+                  <div className="text-xs text-gray-400">✉️ {member.messageCount || 0}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-        <div className="ml-4">
-          {node.children?.map(child => renderFamilyTree(child, depth + 1))}
-        </div>
-      </div>
-    );
-  };
-  
-  return (
-    <div className="space-y-4">
-      {families.length === 0 ? (
-        <div className="text-center text-gray-500">No families found</div>
       ) : (
-        buildFamilyTree(families).map(root => renderFamilyTree(root))
+        <div className="text-center text-gray-400">
+          Select an emoji to view tribe members
+        </div>
       )}
     </div>
   );
 }
 
+// Update App component to handle avatar selection globally
 function App() {
   const [avatars, setAvatars] = useState([]);
   const [selectedAvatar, setSelectedAvatar] = useState(null);
@@ -577,7 +822,8 @@ function App() {
   const [lastId, setLastId] = useState(null);
   const [selectedTier, setSelectedTier] = useState('All');
   const [currentView, setCurrentView] = useState('leaderboard');
-  
+  const [modalAvatar, setModalAvatar] = useState(null);
+
   const loadAvatars = async (isInitial = false) => {
     if (loading || (!hasMore && !isInitial)) return;
     
@@ -645,6 +891,18 @@ function App() {
     loadAvatars(true);
   }, [selectedTier]);
 
+  // Handler for avatar selection from any view
+  const handleAvatarSelect = (avatar) => {
+    // Fetch full avatar details if needed
+    fetch(`/api/avatars/${avatar._id}`)
+      .then(res => res.json())
+      .then(data => setModalAvatar(data))
+      .catch(err => {
+        console.error('Error fetching avatar details:', err);
+        setModalAvatar(avatar); // Fallback to basic avatar data
+      });
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       <h1 className="text-4xl font-bold mb-8 text-center">Avatar Dashboard</h1>
@@ -656,12 +914,12 @@ function App() {
             selectedTier={selectedTier} 
             onTierChange={tier => setSelectedTier(tier)} 
           />
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {(avatars || []).map(avatar => (
+          <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+            {avatars.map(avatar => (
               <AvatarCard 
                 key={avatar._id} 
                 avatar={avatar} 
-                onSelect={setSelectedAvatar}
+                onSelect={handleAvatarSelect}
               />
             ))}
           </div>
@@ -678,9 +936,16 @@ function App() {
           )}
         </>
       ) : currentView === 'combat' ? (
-        <CombatLog />
+        <CombatLog onAvatarSelect={handleAvatarSelect} />
       ) : (
-        <FamilyView />
+        <TribesView onAvatarSelect={handleAvatarSelect} />
+      )}
+
+      {modalAvatar && (
+        <AvatarDetailModal 
+          avatar={modalAvatar} 
+          onClose={() => setModalAvatar(null)} 
+        />
       )}
     </div>
   );
