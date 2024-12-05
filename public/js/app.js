@@ -18,17 +18,66 @@ function MarkdownContent({ content }) {
   );
 }
 
+// Add these helper functions at the top of the file
+const getModelRarity = (modelName) => {
+  // You might want to fetch this from an API or include models.config.mjs content
+  const modelRarities = {
+    'meta-llama/llama-3.2-1b-instruct': 'common',
+    'meta-llama/llama-3.2-3b-instruct': 'common',
+    'eva-unit-01/eva-qwen-2.5-72b': 'rare',
+    'openai/gpt-4o': 'legendary',
+    'meta-llama/llama-3.1-405b-instruct': 'legendary',
+    'anthropic/claude-3-opus:beta': 'legendary',
+    'anthropic/claude-3.5-sonnet:beta': 'legendary',
+    'anthropic/claude-3.5-haiku:beta': 'uncommon',
+    'neversleep/llama-3.1-lumimaid-70b': 'rare',
+    'nvidia/llama-3.1-nemotron-70b-instruct': 'rare',
+    'meta-llama/llama-3.1-70b-instruct': 'uncommon',
+    'pygmalionai/mythalion-13b': 'uncommon',
+    'mistralai/mistral-large-2411': 'uncommon',
+    'qwen/qwq-32b-preview': 'uncommon',
+    'gryphe/mythomax-l2-13b': 'common',
+    'google/gemini-flash-1.5-8b': 'common',
+    'x-ai/grok-beta': 'legendary'
+  };
+  return modelRarities[modelName] || 'common';
+};
+
+const rarityToTier = {
+  'legendary': 'S',
+  'rare': 'A',
+  'uncommon': 'B',
+  'common': 'C'
+};
+
+const getTierFromModel = (model) => {
+  if (!model) return 'U';
+  const rarity = getModelRarity(model);
+  return rarityToTier[rarity] || 'U';
+};
+
 function TierBadge({ tier }) {
   const colors = {
-    S: 'bg-purple-600',  // legendary
-    A: 'bg-blue-600',    // rare
-    B: 'bg-green-600',   // uncommon
-    C: 'bg-yellow-600',  // common
-    U: 'bg-gray-600'     // undefined
+    S: 'bg-purple-600',  // matches legendary: 0x9333EA
+    A: 'bg-blue-600',    // matches rare: 0x2563EB
+    B: 'bg-green-600',   // matches uncommon: 0x16A34A
+    C: 'bg-yellow-600',  // matches common: 0xEAB308
+    U: 'bg-gray-600'     // matches undefined: 0x4B5563
+  };
+
+  const tierLabels = {
+    S: 'Legendary',
+    A: 'Rare',
+    B: 'Uncommon',
+    C: 'Common',
+    U: 'Unknown'
   };
 
   return (
-    <span className={`${colors[tier]} px-2 py-1 rounded text-xs font-bold`}>
+    <span 
+      className={`${colors[tier]} px-2 py-1 rounded text-xs font-bold`} 
+      title={tierLabels[tier]}
+    >
       Tier {tier}
     </span>
   );
@@ -294,6 +343,8 @@ function AvatarDetailModal({ avatar, onClose }) {
     );
   }
 
+  const tier = getTierFromModel(avatar.model);
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
@@ -304,8 +355,9 @@ function AvatarDetailModal({ avatar, onClose }) {
             <div>
               <h2 className="text-2xl font-bold">{avatar.name}</h2>
               <div className="flex items-center gap-2">
-                <TierBadge tier={avatar.tier} />
-                <span className="text-gray-400">✉️ {avatar.messageCount}</span>
+                <TierBadge tier={tier} />
+                {avatar.model && <span>{avatar.model}</span>}
+                {avatar.emoji && <span>{avatar.emoji}</span>}
               </div>
             </div>
           </div>
@@ -428,6 +480,7 @@ function AvatarCard({ avatar, onSelect }) {
   }, [allAvatars.length]);
 
   const currentAvatar = allAvatars[currentImageIndex];
+  const tier = getTierFromModel(avatar.model);
   
   return (
     <div onClick={() => onSelect(avatar)} 
@@ -447,11 +500,10 @@ function AvatarCard({ avatar, onSelect }) {
       <div className="space-y-1">
         <div className="flex items-center gap-1 justify-between">
           <h3 className="text-sm font-bold truncate">{avatar.name}</h3>
-          <TierBadge tier={avatar.tier} />
+          <TierBadge tier={tier} />
         </div>
         <div className="flex items-center gap-1 text-xs text-gray-400">
           <span>✉️ {avatar.messageCount}</span>
-          {avatar.emoji && <span>{avatar.emoji}</span>}
         </div>
         <StatsDisplay stats={avatar.stats} size="small" />
       </div>
@@ -797,7 +849,8 @@ function TribesView({ onAvatarSelect }) {
                 </div>
                 <div className="text-center">
                   <div className="font-medium truncate">{member.name}</div>
-                  <div className="text-xs text-gray-400">✉️ {member.messageCount || 0}</div>
+                  {avatar.model && <span>{avatar.model}</span>}
+                  {avatar.emoji && <span>{avatar.emoji}</span>}
                 </div>
               </div>
             ))}
