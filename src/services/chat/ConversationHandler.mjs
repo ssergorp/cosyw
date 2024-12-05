@@ -31,9 +31,37 @@ export class ConversationHandler {
     this.HUMAN_RESPONSE_COOLDOWN = 5000;  // 5 seconds for human messages
     this.BOT_RESPONSE_COOLDOWN = 300000;  // 5 minutes for bot messages
     this.INITIAL_RESPONSE_COOLDOWN = 10000; // 10 seconds after joining channel
-
+    this.requiredPermissions = [
+      'ViewChannel',
+      'SendMessages',
+      'ReadMessageHistory',
+      'ManageWebhooks'
+    ];
   }
+  async checkChannelPermissions(channel) {
+    try {
+      // Get bot member in guild
+      const member = channel.guild.members.cache.get(this.client.user.id);
+      if (!member) return false;
 
+      // Check required permissions
+      const permissions = channel.permissionsFor(member);
+      const missingPermissions = this.requiredPermissions.filter(perm =>
+        !permissions.has(perm)
+      );
+
+      if (missingPermissions.length > 0) {
+        this.logger.warn(`Missing permissions in channel ${channel.id}: ${missingPermissions.join(', ')}`);
+        return false;
+      }
+
+      return true;
+
+    } catch (error) {
+      this.logger.error(`Permission check error for ${channel.id}: ${error.message}`);
+      return false;
+    }
+  }
   async checkIdleUpdate(avatars) {
     if (Date.now() - this.lastUpdate >= this.IDLE_TIME) {
       const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
@@ -47,7 +75,7 @@ export class ConversationHandler {
    * Unified method to generate a narrative for reflection or inner monologue.
    */
   async generateNarrative(avatar) {
-    
+
     const memories = await this.memoryService.getMemories(avatar._id);
 
     try {
@@ -116,7 +144,7 @@ export class ConversationHandler {
       return await avatarChannel.threads.create({
         name: threadName,
         autoArchiveDuration: 1440, // 24 hours
-        type: privateThread ? ChannelType.PrivateThread: ChannelType.PublicThread,
+        type: privateThread ? ChannelType.PrivateThread : ChannelType.PublicThread,
         reason: `Unified narrative thread for ${avatar.name}`
       });
     } catch (error) {
@@ -151,7 +179,7 @@ export class ConversationHandler {
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
       const lastNarrative = await db.collection('narratives')
-        .findOne({ $or: [ { avatarId }, { avatarId: avatarId.toString() }, { avatarId: { $exists: false } } ] }, { sort: { timestamp: -1 } });
+        .findOne({ $or: [{ avatarId }, { avatarId: avatarId.toString() }, { avatarId: { $exists: false } }] }, { sort: { timestamp: -1 } });
       await client.close();
       return lastNarrative;
     } catch (error) {
@@ -172,6 +200,11 @@ export class ConversationHandler {
   }
 
   async sendResponse(channel, avatar) {
+    // Check permissions before attempting to send
+    if (!await this.checkChannelPermissions(channel)) {
+      this.logger.error(`Cannot send response - missing permissions in channel ${channelId}`);
+      return null;
+    }
     try {
 
       // Get recent channel messages
