@@ -24,7 +24,7 @@ await (async () => {
       console.warn('MONGO_URI not set in environment variables, using default localhost');
     }
     await mongoClient.connect();
-    db = mongoClient.db('cosyworld2');
+    db = mongoClient.db(process.env.MONGO_DB_NAME || 'cosyworld');
     console.log('Connected to MongoDB at:', mongoClient.options.srvHost || mongoClient.options.hosts?.[0] || 'unknown host');
   } catch (error) {
     console.error('Failed to connect to MongoDB:', error);
