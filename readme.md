@@ -1,6 +1,6 @@
 # CosyWorld - AI Avatar Discord Bot
 
-## 0.0.8 Moonstone Sanctum Update 🌙✨
+## 0.0.8 Lunar Sanctum Update 🌟
 
 **CosyWorld** is a Discord bot that creates and manages AI-powered avatars capable of interacting with users, engaging in conversations, and participating in a dungeon-like game environment.
 
@@ -26,6 +26,7 @@
 - 🎭 **Dynamic Personality Development**: Avatars evolve their personalities based on user interactions.
 - 📊 **Web Dashboard**: Track avatar stats, interactions, and manage settings through an intuitive interface.
 - 🧬 **Avatar Breeding System**: Combine avatars to create new personalities and traits.
+- 📁 **User Profiles**: Allow users to create and customize their own profiles. [in development]
 
 ## Prerequisites
 
@@ -47,11 +48,9 @@ REPLICATE_API_TOKEN="your_replicate_api_token"
 REPLICATE_MODEL="immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f"
 
 OPENROUTER_API_TOKEN="your_openrouter_api_token"
-_OPENROUTER_MODEL="meta-llama/llama-3.2-3b-instruct"
 OPENROUTER_MODEL="openai/gpt-4o"
 
-MONGO_DB_NAME='cosyworld2'
-OLLAMA_MODEL='llama3.2'
+MONGO_DB_NAME='cosyworld'
 
 S3_API_ENDPOINT="your_s3_api_endpoint"
 S3_API_KEY="your_s3_api_key"
@@ -82,7 +81,13 @@ Follow these steps to set up and run **CosyWorld**:
    - Create a `.env` file in the root directory.
    - Add the required environment variables as shown in the [Environment Variables](#environment-variables) section.
 
-4. **Start the Bot:**
+4. **Run Database Migrations:**
+
+   ```bash
+   npm run migrate
+   ```
+
+5. **Start the Bot:**
 
    ```bash
    npm start
