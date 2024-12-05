@@ -1,5 +1,6 @@
 import { MongoClient } from 'mongodb';
 
+import { ChannelType } from 'discord.js';
 import { sendAsWebhook } from '../discordService.mjs';
 import { MemoryService } from '../MemoryService.mjs';
 
@@ -223,13 +224,14 @@ export class ConversationHandler {
           speak freely and have fun, no need to use capitals or proper spelling this is a 
 
           
-          reply with a single short chatroom style sentence or *actions*, use emojis, be silly, in character
+          reply with a single short chatroom style sentence or *actions*, use emojis, 
+          be silly, stay in character and ONLY provide a response as ${avatar.name} then stop.
 
-          ${avatar.name}:
-          `
+          ${avatar.name}:`
         }
       ], {
-        model: avatar.model
+        model: avatar.model,
+        stop: '\n\n'
       });
 
       if (!response) {

@@ -160,6 +160,10 @@ export class LocationService {
         model: 'openai/gpt-4o'
       });
 
+      if (!cleanLocationName) {
+        throw new Error("clean location name is null");
+      }
+
       // trim by words
       const words = cleanLocationName.split(' ');
       while (words.join(' ').length > 100) { words.pop(); }

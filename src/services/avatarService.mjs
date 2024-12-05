@@ -72,12 +72,12 @@ export class AvatarGenerationService {
   async getLastBredDate(avatarId) {
 
     try {
-      const db = this.db();
+      const db = this.db;
 
       // Find most recent avatar where this ID is in parents array
       const lastOffspring = await db.collection('avatars')
         .findOne(
-          { parents: avatarId },
+          { parents: { $in: [avatarId] } },
           {
             sort: { createdAt: -1 },
             projection: { createdAt: 1 }
@@ -93,9 +93,7 @@ export class AvatarGenerationService {
     } catch (error) {
       this.logger.error(`Error getting last bred date for ${avatarId}: ${error.message}`);
       throw error;
-    } finally {
-      await client.close();
-    }
+    } 
   }
 
 
@@ -373,7 +371,7 @@ export class AvatarGenerationService {
       "immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f",
       {
         input: {
-          prompt: `MRQ ${prompt} holographic black neon MRQ`,
+          prompt: `MRQ ${prompt} holographic black neon watercolors MRQ`,
           model: "dev",
           lora_scale: 1,
           num_outputs: 1,

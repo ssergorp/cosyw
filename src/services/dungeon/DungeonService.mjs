@@ -1,4 +1,4 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { OpenRouterService } from '../openrouterService.mjs';
 
 import { DungeonLog } from './DungeonLog.mjs';
@@ -207,6 +207,11 @@ export class DungeonService {
     try {
       await client.connect();
       const db = client.db(process.env.MONGO_DB_NAME);
+
+      if ('ObjectId' !== avatarId.__proto__.constructor.name) {
+        console.warn('string format detected')
+      }
+      delete stats._id;
       await db.collection('dungeon_stats').updateOne(
         { avatarId },
         { $set: stats },

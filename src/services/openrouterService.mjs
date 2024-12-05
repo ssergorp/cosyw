@@ -5,7 +5,7 @@ export class OpenRouterService {
   constructor(apiKey) {
     this.model = process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.2-3b-instruct';
     this.openai = new OpenAI({
-      apiKey: ( apiKey || process.env.OPENROUTER_API_TOKEN),
+      apiKey: (apiKey || process.env.OPENROUTER_API_TOKEN),
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://ratimics.com', // Optional, for including your app on openrouter.ai rankings.
@@ -22,26 +22,26 @@ export class OpenRouterService {
       { rarity: 'rare', min: 18, max: 19 },        // Rare: 18-19 (10%)
       { rarity: 'legendary', min: 20, max: 20 },   // Legendary: 20 (5%)
     ];
-  
+
     // Roll a d20
     const roll = Math.ceil(Math.random() * 20);
-  
+
     // Determine rarity based on the roll
     const selectedRarity = rarityRanges.find(range => roll >= range.min && roll <= range.max)?.rarity;
-  
+
     // Filter models by the selected rarity
     const availableModels = this.modelConfig.filter(model => model.rarity === selectedRarity);
-  
+
     // Return a random model from the selected rarity group or fallback to default
     if (availableModels.length > 0) {
       const randomIndex = Math.floor(Math.random() * availableModels.length);
       return availableModels[randomIndex].model;
     }
-  
+
     // Fallback to default if no models are found
     return this.model;
   }
-  
+
 
   modelIsAvailable(model) {
     return this.modelConfig.some(m => m.model === model);
@@ -68,7 +68,7 @@ export class OpenRouterService {
 
   // Method to have a chat with OpenRouter
   async chat(messages, options = { model: 'meta-llama/llama-3.2-1b-instruct' }) {
-    
+
     // verify that the model is available
     let model = options.model || this.model;
     if (!this.modelIsAvailable(model)) {
@@ -76,19 +76,15 @@ export class OpenRouterService {
       model = this.model;
     }
 
-    try {
-      const response = await this.openai.chat.completions.create({
-        model, messages: messages.filter(T => T.content),
+    const response = await this.openai.chat
+      .completions.create({
+        model,
+        messages: messages.filter(T => T.content),
         ...options,
       });
-      if (!response || !response.choices || response.choices.length === 0) {
-        console.error('Invalid response from OpenRouter during chat.');
-        return null;
-      }
-      return response.choices[0].message.content.trim() || '...';
-    } catch (error) {
-      console.error('Error while chatting with OpenRouter:', error.message);
-      return null;
+    if (!response || !response.choices || response.choices.length === 0) {
+      throw new Error('Invalid response from OpenRouter during chat.');
     }
+    return response.choices[0].message.content.trim() || '...';
   }
 }
