@@ -26,6 +26,9 @@ await (async () => {
     await mongoClient.connect();
     db = mongoClient.db(process.env.MONGO_DB_NAME || 'cosyworld');
     console.log('Connected to MongoDB at:', mongoClient.options.srvHost || mongoClient.options.hosts?.[0] || 'unknown host');
+    
+    // Initialize indexes
+    await initializeIndexes(db);
   } catch (error) {
     console.error('Failed to connect to MongoDB:', error);
     console.error('Please check if:');
@@ -38,6 +41,55 @@ await (async () => {
   console.error('MongoDB connection error:', error);
   process.exit(1);
 });
+
+// Add this function after MongoDB connection setup
+async function initializeIndexes(db) {
+  try {
+    // Indexes for avatars collection
+    await db.collection('avatars').createIndexes([
+      { key: { name: 1 }, background: true },
+      { key: { emoji: 1 }, background: true },
+      { key: { "parents": 1 }, background: true },
+      { key: { model: 1 }, background: true },
+      { key: { createdAt: -1 }, background: true },
+      { key: { name: "text", description: "text" }, background: true }
+    ]);
+
+    // Indexes for messages collection
+    await db.collection('messages').createIndexes([
+      { key: { authorUsername: 1 }, background: true },
+      { key: { timestamp: -1 }, background: true },
+      { key: { avatarId: 1 }, background: true }
+    ]);
+
+    // Indexes for narratives collection
+    await db.collection('narratives').createIndexes([
+      { key: { avatarId: 1, timestamp: -1 }, background: true }
+    ]);
+
+    // Indexes for memories collection
+    await db.collection('memories').createIndexes([
+      { key: { avatarId: 1, timestamp: -1 }, background: true }
+    ]);
+
+    // Indexes for dungeon_stats collection
+    await db.collection('dungeon_stats').createIndexes([
+      { key: { avatarId: 1 }, background: true, unique: true }
+    ]);
+
+    // Indexes for dungeon_log collection
+    await db.collection('dungeon_log').createIndexes([
+      { key: { timestamp: -1 }, background: true },
+      { key: { actor: 1 }, background: true },
+      { key: { target: 1 }, background: true }
+    ]);
+
+    console.log('Database indexes created successfully');
+  } catch (error) {
+    console.error('Error creating indexes:', error);
+    // Don't exit the process, as missing indexes isn't fatal
+  }
+}
 
 // Remove TIER_THRESHOLDS constant
 

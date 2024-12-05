@@ -638,7 +638,7 @@ function CombatLogEntry({ entry, onAvatarClick }) {
 
         <div className="flex-grow flex items-center justify-center gap-2 px-4">
           <span className="text-gray-400">⚔️</span>
-          <span className="text-sm font-medium text-gray-300">{entry.result}</span>
+          <span className="text-sm font-medium text-gray-300">{entry.result.substring(0, 80)}</span>
         </div>
 
         {entry.targetName && (
@@ -824,7 +824,7 @@ function TribesView({ onAvatarSelect }) {
       </div>
 
       {/* Selected tribe details */}
-      {selectedTribe ? (
+      {selectedTribe && (
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="flex items-center gap-4 mb-6">
             <span className="text-4xl">{selectedTribe.emoji}</span>
@@ -849,14 +849,15 @@ function TribesView({ onAvatarSelect }) {
                 </div>
                 <div className="text-center">
                   <div className="font-medium truncate">{member.name}</div>
-                  {avatar.model && <span>{avatar.model}</span>}
-                  {avatar.emoji && <span>{avatar.emoji}</span>}
+                  {member.model && <span>{member.model}</span>}
+                  {member.emoji && <span>{member.emoji}</span>}
                 </div>
               </div>
             ))}
           </div>
         </div>
-      ) : (
+      )}
+      {!selectedTribe && (
         <div className="text-center text-gray-400">
           Select an emoji to view tribe members
         </div>
