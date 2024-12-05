@@ -1,4 +1,4 @@
-import { MemoryService } from '../../MemoryService.mjs';
+import { MemoryService } from '../../memoryService.mjs';
 import { BaseTool } from './BaseTool.mjs';
 
 export class RememberTool extends BaseTool {

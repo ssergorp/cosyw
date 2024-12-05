@@ -2,7 +2,7 @@ import { MongoClient } from 'mongodb';
 
 import { ChannelType } from 'discord.js';
 import { sendAsWebhook } from '../discordService.mjs';
-import { MemoryService } from '../MemoryService.mjs';
+import { MemoryService } from '../memoryService.mjs';
 
 export class ConversationHandler {
   constructor(client, aiService, logger, avatarService, dungeonService) {
