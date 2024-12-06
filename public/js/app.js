@@ -1,4 +1,4 @@
-const { useState, useEffect } = React;
+const { useState, useEffect, useCallback } = React;
 
 // Add this utility function near the top
 function sanitizeNumber(value, fallback = 0) {
@@ -778,31 +778,85 @@ function TribesView({ onAvatarSelect }) {
   const [tribes, setTribes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedEmoji, setSelectedEmoji] = useState(null);
+  const [error, setError] = useState(null);
+
+  const sanitizeMembers = useCallback((members) => {
+    if (!Array.isArray(members)) return [];
+    return members.filter(member => 
+      member && 
+      typeof member === 'object' &&
+      typeof member._id === 'string' &&
+      typeof member.name === 'string' &&
+      (typeof member.thumbnailUrl === 'string' || typeof member.imageUrl === 'string')
+    );
+  }, []);
+
+  const sanitizeTribe = useCallback((tribe) => {
+    if (!tribe || typeof tribe !== 'object' || typeof tribe.emoji !== 'string') return null;
+    const members = sanitizeMembers(tribe.members);
+    if (!members.length) {
+      // Even if no members are found, return a tribe with empty members array
+      return { emoji: tribe.emoji, count: 0, members: [] };
+    }
+    return { emoji: tribe.emoji, count: members.length, members };
+  }, [sanitizeMembers]);
+  
 
   useEffect(() => {
     const fetchTribes = async () => {
       try {
         const response = await fetch('/api/tribes');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
         const data = await response.json();
-        setTribes(data);
+        
+        // Sanitize the entire tribes data
+        const validTribes = (Array.isArray(data) ? data : [])
+          .map(sanitizeTribe)
+          .filter(Boolean);
+
+        setTribes(validTribes);
       } catch (error) {
         console.error('Error fetching tribes:', error);
+        setError(error.message);
       } finally {
         setLoading(false);
       }
     };
 
     fetchTribes();
-  }, []);
+  }, [sanitizeTribe]);
 
-  if (loading) return (
-    <div className="text-center py-4">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
-    </div>
-  );
+  if (loading) {
+    return (
+      <div className="text-center py-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
+      </div>
+    );
+  }
 
-  const selectedTribe = selectedEmoji ? tribes.find(t => t.emoji === selectedEmoji) : null;
+  if (error) {
+    return (
+      <div className="text-center text-red-500 py-4">
+        Error loading tribes: {error}
+      </div>
+    );
+  }
 
+  if (!tribes.length) {
+    return (
+      <div className="text-center text-gray-400 py-4">
+        No tribes found
+      </div>
+    );
+  }
+
+  const selectedTribe = selectedEmoji ? 
+    tribes.find(t => t && t.emoji === selectedEmoji) : null;
+    console.log('selectedTribe', selectedTribe);
+    console.log('selectedTribe.emoji', selectedTribe?.emoji);
+    console.log('members', selectedTribe?.members);
   return (
     <div>
       {/* Emoji selector */}
@@ -829,7 +883,9 @@ function TribesView({ onAvatarSelect }) {
           <div className="flex items-center gap-4 mb-6">
             <span className="text-4xl">{selectedTribe.emoji}</span>
             <div>
-              <h2 className="text-2xl font-bold">{selectedTribe.count} Members</h2>
+              <h2 className="text-2xl font-bold">
+                {selectedTribe.count} Members
+              </h2>
               <p className="text-gray-400">Click an avatar to view details</p>
             </div>
           </div>
@@ -842,15 +898,19 @@ function TribesView({ onAvatarSelect }) {
               >
                 <div className="aspect-square overflow-hidden rounded-lg mb-2">
                   <img
-                    src={member.thumbnailUrl}
+                    src={member.thumbnailUrl || member.imageUrl}
                     alt={member.name}
                     className="w-full h-full object-cover transform group-hover:scale-110 transition-transform"
                   />
                 </div>
                 <div className="text-center">
                   <div className="font-medium truncate">{member.name}</div>
-                  {member.model && <span>{member.model}</span>}
-                  {member.emoji && <span>{member.emoji}</span>}
+                  {member.model && (
+                    <div className="text-xs text-gray-400">{member.model}</div>
+                  )}
+                  {member.emoji && (
+                    <div className="text-sm">{member.emoji}</div>
+                  )}
                 </div>
               </div>
             ))}
@@ -866,7 +926,58 @@ function TribesView({ onAvatarSelect }) {
   );
 }
 
-// Update App component to handle avatar selection globally
+// Add these new components at the top with other component definitions
+function WalletButton() {
+  const [wallet, setWallet] = useState(null);
+  const [address, setAddress] = useState(null);
+
+  const connectWallet = async () => {
+    try {
+      if (!window.solana || !window.solana.isPhantom) {
+        alert('Please install Phantom wallet!');
+        window.open('https://phantom.app/', '_blank');
+        return;
+      }
+
+      const resp = await window.solana.connect();
+      setWallet(window.solana);
+      setAddress(resp.publicKey.toString());
+    } catch (err) {
+      console.error('Failed to connect wallet:', err);
+    }
+  };
+
+  const disconnectWallet = () => {
+    if (wallet) {
+      wallet.disconnect();
+      setWallet(null);
+      setAddress(null);
+    }
+  };
+
+  return (
+    <div className="fixed top-4 right-4 z-50">
+      {!wallet ? (
+        <button
+          onClick={connectWallet}
+          className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+        >
+          <span>Connect Wallet</span>
+        </button>
+      ) : (
+        <button
+          onClick={disconnectWallet}
+          className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+        >
+          <span className="truncate w-32">{address}</span>
+          <span>×</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Update App component to include WalletButton
 function App() {
   const [avatars, setAvatars] = useState([]);
   const [selectedAvatar, setSelectedAvatar] = useState(null);
@@ -959,6 +1070,7 @@ function App() {
 
   return (
     <div className="container mx-auto px-4 py-8">
+      <WalletButton />
       <h1 className="text-4xl font-bold mb-8 text-center">Avatar Dashboard</h1>
       <ViewToggle currentView={currentView} onViewChange={setCurrentView} />
       

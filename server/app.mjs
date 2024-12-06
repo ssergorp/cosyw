@@ -105,11 +105,6 @@ const rarityToTier = {
   'common': 'C'
 };
 
-const calculateTier = (avatar) => {
-  if (!avatar.model) return 'U';
-  const rarity = getModelRarity(avatar.model);
-  return rarityToTier[rarity] || 'U';
-};
 
 // Add escapeRegExp function to sanitize avatar names for regex
 function escapeRegExp(string) {
