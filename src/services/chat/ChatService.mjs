@@ -5,7 +5,7 @@ import { MessageProcessor } from './MessageProcessor.mjs';
 
 import { DungeonService } from '../dungeon/DungeonService.mjs'; // Added import
 
-const RESPONSE_RATE = process.env.RESPONSE_RATE || 0.05; // 20% response rate
+const RESPONSE_RATE = process.env.RESPONSE_RATE || 0.005; // 20% response rate
 
 export class ChatService {
   constructor(client, db, options = {}) {
@@ -126,7 +126,7 @@ export class ChatService {
       this.setupReflectionInterval();
       // update active avatars
       await this.UpdateActiveAvatars();
-      
+
       this.logger.info('ChatService setup completed');
 
     } catch (error) {
@@ -146,16 +146,16 @@ export class ChatService {
   }
 
   async getLastMentionedAvatars(messages, avatars) {
-      // for each message, check if any avatars are mentioned
-      const mentionedAvatars = new Set();
-      for (const message of messages) {
-        for (const avatar of avatars) {
-          if (message.content.includes(avatar.name)) {
-            mentionedAvatars.add(avatar._id);
-          }
+    // for each message, check if any avatars are mentioned
+    const mentionedAvatars = new Set();
+    for (const message of messages) {
+      for (const avatar of avatars) {
+        if (message.content.includes(avatar.name)) {
+          mentionedAvatars.add(avatar._id);
         }
       }
-      return [...mentionedAvatars];
+    }
+    return [...mentionedAvatars];
   }
 
   // find the 12 most mentioned 
@@ -205,7 +205,7 @@ export class ChatService {
 
     const replyAvatars = topAvatars
       .sort(() => Math.random() - 0.6)
-      .slice(0, 24);
+      .slice(0, 6);
     // respond as each of the top 6 avatars
     for (const avatar of replyAvatars) {
       const channel = await this.client.channels.cache.get(avatar.channelId);
@@ -219,10 +219,13 @@ export class ChatService {
         continue;
       }
 
+      if (Math.random > RESPONSE_RATE) {
+        continue;
+      }
+
       try {
         await this.respondAsAvatar(
-          channel, avatar,
-          Math.random() < RESPONSE_RATE || false
+          channel, avatar, false
         );
       } catch (error) {
         this.logger.error(`Error responding as avatar ${avatar.name}: ${error.message}`);

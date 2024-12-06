@@ -121,7 +121,7 @@ async function handleBreedCommand(message, args, commandLine) {
   // find an avatar for each argument
   const avatars = await avatarService.getAllAvatars();
   const mentionedAvatars = Array.from(extractMentionedAvatars(commandLine, avatars))
-  .sort(() => Math.random() - 0.5).slice(-2);
+    .sort(() => Math.random() - 0.5).slice(-2);
 
   // set the breeding season based on the day of the week
   const dayOfWeek = new Date().getDay();
@@ -153,7 +153,7 @@ async function handleBreedCommand(message, args, commandLine) {
 
     // check if the avatar has been bred in the last 24 hours
     const breedingDate1 = await avatarService.getLastBredDate(avatar1._id.toString());
-    
+
     if (breedingDate1 && new Date() - new Date(breedingDate1) < 24 * 60 * 60 * 1000) {
       await replyToMessage(
         message.channel.id,
@@ -171,7 +171,7 @@ async function handleBreedCommand(message, args, commandLine) {
         `${avatar1.name} has already been bred in the last 24 hours.`
       );
       return;
-    }    
+    }
 
     // Ensure both avatars have "Poozer" in their name
     if (message.author.username !== 'noxannihilism' && !message.author.bot && (!avatar1.name.includes(BREEDING_SEASON.toLowerCase()) && !avatar2.name.toLowerCase().includes(BREEDING_SEASON.toLowerCase()))) {
@@ -239,7 +239,7 @@ async function handleAttackCommand(message, args) {
     await replyToMessage(
       message.channel.id,
       message.id,
-      `Could not find an avatar named "${targetName}".`
+      `Could not find an avatar named "${targetName.substring(0, 32)}".`
     );
     return;
   }
