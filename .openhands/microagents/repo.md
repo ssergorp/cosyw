@@ -1,7 +1,35 @@
 Repository: Cosyworld
+
 Description: CosyWorld is a Discord bot that creates and manages
 AI-powered avatars capable of interacting with users, engaging in 
 conversations, and participating in a dungeon-like game environment
+
+Before setting up CosyWorld, ensure you have the following:
+
+    Node.js v18 or higher
+    MongoDB database
+    Discord Bot Token: Create a Discord bot and obtain its token.
+    OpenRouter API Key or Ollama setup for AI model integration
+
+Environment Variables
+
+Create a .env file in the root directory of your project and configure the following environment variables:
+
+DISCORD_BOT_TOKEN="your_discord_bot_token"
+MONGO_URI="mongodb://127.0.0.1:27017"
+REPLICATE_API_TOKEN="your_replicate_api_token"
+REPLICATE_MODEL="immanencer/mirquo:dac6bb69d1a52b01a48302cb155aa9510866c734bfba94aa4c771c0afb49079f"
+
+OPENROUTER_API_TOKEN="your_openrouter_api_token"
+OPENROUTER_MODEL="openai/gpt-4o"
+
+MONGO_DB_NAME='cosyworld'
+
+S3_API_ENDPOINT="your_s3_api_endpoint"
+S3_API_KEY="your_s3_api_key"
+CLOUDFRONT_DOMAIN="your_cloudfront_domain"
+
+Note: Ensure that the .env file is added to your .gitignore to keep sensitive information secure.
 
 Directory Structure:
 - src/: Main application code
