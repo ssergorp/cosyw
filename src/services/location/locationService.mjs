@@ -1,5 +1,5 @@
 import Fuse from 'fuse.js';
-import { OpenRouterService } from '../openrouterService.mjs';
+import { OllamaService } from '../ollamaService.mjs';
 import { uploadImage } from '../s3imageService.mjs';
 import { sendAsWebhook } from '../discordService.mjs';
 import { MongoClient } from 'mongodb';
@@ -12,7 +12,7 @@ export class LocationService {
       throw new Error('Discord client is required for LocationService');
     }
     this.client = discordClient;
-    this.aiService = aiService || new OpenRouterService(); // Allow injection or create new
+    this.aiService = aiService || new OllamaService(); // Allow injection or create new
     this.fuseOptions = {
       threshold: 0.4,
       keys: ['name']

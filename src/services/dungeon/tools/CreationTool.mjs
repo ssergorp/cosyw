@@ -1,11 +1,11 @@
 import { BaseTool } from './BaseTool.mjs';
-import { OpenRouterService } from '../../openrouterService.mjs';
+import { OllamaService } from '../../ollamaService.mjs';
 
 export class CreationTool extends BaseTool {
   constructor(dungeonService) {
     super(dungeonService);
     this.cache = new Map(); // Cache for generated descriptions
-    this.aiService = new OpenRouterService(); // Initialize AIService here
+    this.aiService = new OllamaService(); // Initialize AIService here
   }
 
   async execute(message, params, command) {

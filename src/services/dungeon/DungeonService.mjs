@@ -1,5 +1,5 @@
 import { MongoClient, ObjectId } from 'mongodb';
-import { OpenRouterService } from '../openrouterService.mjs';
+import { OllamaService } from '../ollamaService.mjs';
 
 import { DungeonLog } from './DungeonLog.mjs';
 import { AttackTool } from './tools/AttackTool.mjs';
@@ -19,7 +19,7 @@ export class DungeonService {
     this.dungeonLog = new DungeonLog(logger);
     this.tools = new Map();
     this.registerTools();
-    this.aiService = new OpenRouterService(); // Add AIService initialization
+    this.aiService = new OllamaService(); // Add AIService initialization
     this.creationTool = new CreationTool(this);
     this.defaultStats = {
       hp: 100,

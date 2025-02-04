@@ -3,8 +3,8 @@
 import dotenv from 'dotenv';
 import winston from 'winston';
 import { MongoClient } from 'mongodb';
-// import { OllamaService as AIService } from './services/ollamaService.mjs';
-import { OpenRouterService as AIService } from './services/openrouterService.mjs';
+import { OllamaService as AIService } from './services/ollamaService.mjs';
+// import { OpenRouterService as AIService } from './services/openrouterService.mjs';
 import { AvatarGenerationService } from './services/avatarService.mjs';
 import {
   client,
