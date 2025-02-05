@@ -567,7 +567,7 @@ async function main() {
     const db = mongoClient.db(MONGO_DB_NAME);
     messagesCollection = db.collection('messages');
 
-    avatarService = new AvatarGenerationService(db);
+    avatarService = new AvatarGenerationService(db, aiService);
 
 
     dbConnected = true;

@@ -18,8 +18,8 @@ import { ArweaveService } from './arweaveService.mjs';
 import fetch from 'node-fetch';
 
 export class AvatarGenerationService {
-  constructor(db) {
-    this.aiService = new AIService();
+  constructor(db, aiService = null) {
+    this.aiService = aiService || new AIService();
     this.replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
     this.db = db; // Will be set when connecting to the database
 
