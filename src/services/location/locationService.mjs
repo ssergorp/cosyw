@@ -157,7 +157,7 @@ export class LocationService {
         Try to keep the original meaning intact.
         ONLY return the revised name, without any additional text.` }
       ], {
-        model: 'openai/gpt-4o'
+        model: 'llama2'
       });
 
       if (!cleanLocationName) {
@@ -193,7 +193,7 @@ export class LocationService {
         { role: 'system', content: 'Generate a brief, atmospheric description of this fantasy location.' },
         { role: 'user', content: `Describe ${cleanLocationName} in 2-3 sentences.` }
       ], {
-        model: 'openai/gpt-4o'
+        model: 'llama2'
       });
 
       const locationImage = await this.generateLocationImage(cleanLocationName, locationDescription);
