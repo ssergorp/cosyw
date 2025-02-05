@@ -1,6 +1,6 @@
 import { sendAsWebhook } from "../discordService.mjs";
 
-const DECISION_MODEL = 'meta-llama/llama-3.2-1b-instruct';
+const DECISION_MODEL = 'llama2';
 
 export class DecisionMaker {
   constructor(aiService, logger) {
